@@ -248,6 +248,10 @@ python3 -m unittest discover -s tests
 
 To avoid depending on a particular build, only long-standing APIs are used, and builds without a newer attribute fall back to the old name.
 
+## Use of generative AI
+
+The code, tests and documents in this repository were written with a generative AI coding agent (Claude Code, with the model Claude Fable 5.2) under the author's direction. Behaviour was checked against the real TouchDesigner builds listed under Tested with, and by the tests in `tests/`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
