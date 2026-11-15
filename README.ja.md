@@ -115,7 +115,7 @@ n -> lv
 lv -> out
 END
 python3 td.py layout /project1               # ノードを配線に沿って整列します（他の人が並べたネットワークには --yes が必要です）
-python3 td.py shot /project1                 # /project1 をネットワークエディタに表示して、TD のウィンドウだけを画像に保存します（現在は macOS のみ）
+python3 td.py shot /project1                 # /project1 をネットワークエディタに表示して、TD のウィンドウだけを画像に保存します
 python3 td.py ls /project1 --pos             # 子の一覧に、それぞれの位置を付けて表示します
 python3 td.py note /project1/lv1 '黒レベルを上げる'            # ノードに表示されるコメントを付けます
 python3 td.py box /project1 'Source' n lv                    # 指定した OP を整列し、タイトル付きの枠で囲みます（任意）

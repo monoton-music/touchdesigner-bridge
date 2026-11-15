@@ -115,7 +115,7 @@ n -> lv
 lv -> out
 END
 python3 td.py layout /project1               # arrange the nodes along the wiring (--yes for a network someone else arranged)
-python3 td.py shot /project1                 # a picture of the TD window with /project1 in the network editor (macOS for now)
+python3 td.py shot /project1                 # a picture of the TD window alone, with /project1 framed in the network editor
 python3 td.py ls /project1 --pos             # the children with where each sits
 python3 td.py look /project1/null_final                               # the picture as numbers: tones, black and clipped area, hues
 python3 td.py overlaps /project1                                # OPs lying on top of each other in the network editor

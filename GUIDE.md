@@ -32,7 +32,7 @@ Someone will open the network after you and change it by hand. This section is a
 - Give a stage its own COMP when it has more than a handful of nodes.
 - Arrange along the wiring with `layout COMP` (`--deep` for every COMP below). A chain runs along one row, further inputs come in from below, an unwired OP that another names in a parameter sits under it, and the rest go in columns to the right. `build` into an empty COMP arranges by itself.
 - When a COMP holds several stages and a title on each would help, a box can go around one: `box /project1 '2 Lighting' light smooth compose --body 'what this stage does'`. This is optional. `layout` keeps OPs in their boxes.
-- Look at the network the way its owner will: `shot COMP` saves a picture of the TD window with that COMP framed in the network editor (macOS for now). Coordinates do not show a wire that crosses the picture or a node far from the rest.
+- Look at the network the way its owner will: `shot COMP` saves a picture of the TD window with that COMP framed in the network editor. Coordinates do not show a wire that crosses the picture or a node far from the rest.
 - Run `overlaps` after building by script. It lists OPs lying on top of each other and wires that run right to left. A wire should not have to turn back: move the OP, or wire in the order the picture flows.
 - In shaders, comment each uniform with what its components mean, and each step with what it does to the picture.
 - Remove what is not used. A GLSL TOP or POP creates default DATs next to itself; delete them once it points at your own.

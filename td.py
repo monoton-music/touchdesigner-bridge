@@ -35,7 +35,7 @@ Inspect
   td.py pix PATH [--u 0.5 --v 0.5]     Color of one point of a TOP
   td.py top PATH [--max 768] [--crop X,Y,W,H] [--file F]   Save a TOP as PNG and return the path. Shrinks the long side by a whole factor
                                        (0 keeps every pixel); --crop saves one region, in pixels from the top left
-  td.py shot [COMP] [--file F]         Save a picture of the TD window alone (macOS). With COMP, the network editor shows that COMP, framed, first:
+  td.py shot [COMP] [--file F]         Save a picture of the TD window alone. With COMP, the network editor shows that COMP, framed, first:
                                        the network as a person sees it, wires and all
   td.py wait --when 'EXPR'             Return the frame and the time once a Python expression is true; holds a shell script until then
   td.py conn PATH                      Inputs and outputs
@@ -200,14 +200,20 @@ def mac_window(pid):
 
 def shot(d, comp, file, timeout):
     """Save a picture of the TD window, and only that window: what a person sees in the network editor."""
-    if sys.platform != 'darwin':
-        return 1, 'shot works on macOS only for now'
     if comp:
         # Show that COMP in the network editor, framed, before the picture is taken.
         out = send(d, '.json', json.dumps({'cmd': 'show', 'args': [comp], 'kw': {}}), timeout)
         if out is None or not out['ok']:
             return 1, (out or {}).get('error', 'timeout')
         time.sleep(0.5)     # the editor redraws on a later frame
+    if sys.platform != 'darwin':
+        # On Windows (and from WSL) TD takes the picture of its own window: a shell reached over SSH has no
+        # desktop to take it from.
+        kw = {'file': to_td(file)} if file else {}
+        out = send(d, '.json', json.dumps({'cmd': 'window', 'args': [], 'kw': kw}), timeout)
+        if out is None or not out['ok']:
+            return 1, (out or {}).get('error', 'timeout')
+        return 0, to_local(out['result'])
     wid = mac_window(int(os.path.basename(d)))
     if wid is None:
         return 1, 'the TD window is not on screen (minimised, or on another desktop)'
@@ -379,10 +385,21 @@ def instances(base):
         return found
     for name in names:
         d = os.path.join(base, name)
-        try:
-            with open(os.path.join(d, 'out', 'alive.json'), encoding='utf-8') as fp:
-                a = json.load(fp)
-        except (OSError, ValueError):
+        a = None
+        for attempt in range(4):
+            # TD rewrites this file every few frames. Read at that instant it is missing, locked (Windows) or
+            # half written, which is not the same as a TD that has gone: look again before giving up on it.
+            try:
+                with open(os.path.join(d, 'out', 'alive.json'), encoding='utf-8') as fp:
+                    a = json.load(fp)
+                break
+            except FileNotFoundError:
+                if not os.path.isdir(os.path.join(d, 'out')):
+                    break
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.03)
+        if a is None:
             continue
         if time.time() - a['time'] < 10:
             found.append((d, a))

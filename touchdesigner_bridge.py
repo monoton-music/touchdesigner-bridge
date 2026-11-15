@@ -1592,6 +1592,73 @@ def c_show(path):
     return c.path
 
 
+def c_window(file=None):
+    """Save a picture of this TD's own main window as a PNG (Windows). Taken from inside TD, so it works
+    when the command comes from a session that has no desktop of its own, such as SSH. Used by td.py shot."""
+    if os.name != 'nt':
+        raise Refused('on this system td.py takes the picture itself')
+    import ctypes
+    import struct
+    import zlib
+    from ctypes import wintypes
+    V, I, U = ctypes.c_void_p, ctypes.c_int, ctypes.c_uint
+    u, g = ctypes.windll.user32, ctypes.windll.gdi32
+    u.GetWindowDC.restype, u.GetWindowDC.argtypes = V, [wintypes.HWND]
+    u.ReleaseDC.argtypes = [wintypes.HWND, V]
+    u.PrintWindow.argtypes = [wintypes.HWND, V, U]
+    g.CreateCompatibleDC.restype, g.CreateCompatibleDC.argtypes = V, [V]
+    g.CreateCompatibleBitmap.restype, g.CreateCompatibleBitmap.argtypes = V, [V, I, I]
+    g.SelectObject.restype, g.SelectObject.argtypes = V, [V, V]
+    g.GetDIBits.argtypes = [V, V, U, U, V, V, U]
+    g.DeleteObject.argtypes = [V]
+    g.DeleteDC.argtypes = [V]
+    pid, found = os.getpid(), []
+
+    def each(h, _):
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == pid and u.IsWindowVisible(h):
+            r = wintypes.RECT()
+            u.GetWindowRect(h, ctypes.byref(r))
+            found.append(((r.right - r.left) * (r.bottom - r.top), h, r.right - r.left, r.bottom - r.top))
+        return True
+    u.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(each), 0)
+    if not found or _max(found)[0] <= 0:
+        raise Refused('this TD has no visible window (minimised, or started without a desktop)')
+    _, h, w, hgt = _max(found)
+    head = struct.pack('<IiiHHIIiiII', 40, w, -hgt, 1, 32, 0, 0, 0, 0, 0, 0)     # top row first, 32 bits a pixel
+    buf = ctypes.create_string_buffer(w * hgt * 4)
+    dc = u.GetWindowDC(h)
+    mem = g.CreateCompatibleDC(dc)
+    bmp = g.CreateCompatibleBitmap(dc, w, hgt)
+    try:
+        g.SelectObject(mem, bmp)
+        # 2 asks for the window as the compositor holds it, which is what includes a GPU-drawn surface.
+        drawn = u.PrintWindow(h, mem, 2)
+        got = g.GetDIBits(mem, bmp, 0, hgt, buf, ctypes.create_string_buffer(head + b'\0' * 12), 0)
+    finally:
+        g.DeleteObject(bmp)
+        g.DeleteDC(mem)
+        u.ReleaseDC(h, dc)
+    if not drawn or got != hgt:
+        raise Refused('Windows did not hand over the picture of the window (PrintWindow %s, rows %s of %s)' % (drawn, got, hgt))
+    raw = buf.raw
+    rgb = bytearray(w * hgt * 3)
+    rgb[0::3], rgb[1::3], rgb[2::3] = raw[2::4], raw[1::4], raw[0::4]
+    if not any(rgb[::997]):
+        raise Refused('the picture of the window came back black: the window may be minimised or the display asleep')
+    rows = b''.join(b'\0' + bytes(rgb[y * w * 3:(y + 1) * w * 3]) for y in range(hgt))
+
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    file = file or os.path.join(_img, 'window.png')
+    os.makedirs(os.path.dirname(os.path.abspath(file)), exist_ok=True)
+    with open(file, 'wb') as fp:
+        fp.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, hgt, 8, 2, 0, 0, 0)) +
+                 chunk(b'IDAT', zlib.compress(rows, 6)) + chunk(b'IEND', b''))
+    return file
+
+
 @_undoable
 def c_note(path, text=''):
     """Set the comment shown on an OP in the network. Empty text clears it."""
