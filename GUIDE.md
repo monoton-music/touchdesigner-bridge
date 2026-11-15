@@ -8,7 +8,7 @@ What to know before inspecting or building in TouchDesigner with `td.py`. `pytho
 2. Look. `ls`, `flow`, `op` and `err` show the current shape. `par` returns only non-default parameters. `find / --expr WORD` and `--text WORD` find the OPs whose expressions or DAT text contain a word.
 3. Look up an unfamiliar OP before building with it: `types '*particle*'` finds the type, `parinfo PATH` gives parameter names and menu values, `doc TYPE` explains it. Do not guess parameter names.
 4. Build. `build` creates and wires several OPs at once: one line per OP (`name type par=value ...`), then one line per wire (`a -> b`, `a -> b[1]`). `set PATH name=value` sets values; `name==expr` sets an expression, in `build` lines too (no spaces inside the expression there).
-5. Verify. `err` for errors, `cook` for load, `top` for the image, `geo` for point counts, `chop` for values. Always look at the image: it can be all white or all black with no errors. An error is not done, and a warning is not noise: clear each one, or say in the report which stay and why. A command that answers with a refusal or exits non-zero did not happen.
+5. Verify. `err` for errors, `cook` for load, `top` for the image, `geo` for point counts, `chop` for values. Always look at the image: it can be all white or all black with no errors. `new`, `build`, `set` and `wire` list the errors and warnings of what they touched as `E` and `W` lines: read them. An error is not done, and a warning is not noise: clear each one, or say in the report which stay and why. A command that answers with a refusal or exits non-zero did not happen.
 
 What no command does, do with `py`.
 

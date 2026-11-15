@@ -340,8 +340,10 @@ class BridgeTest(unittest.TestCase):
         p1, p2, q1, q2, q3 = self.at('/c', 'p1', 'p2', 'q1', 'q2', 'q3')
         self.assertEqual(p1[1], p2[1])
         self.assertEqual(len(set([q1[1], q2[1], q3[1]])), 1)
-        # q3 is alone in its column, and still stays with q1 and q2 instead of moving up beside p2
-        self.assertLess(q3[1], p2[1])
+        # q3 is alone in its column, and still stays with q1 and q2 instead of sitting beside p2
+        self.assertNotEqual(q3[1], p2[1])
+        # the longer line takes the top row
+        self.assertGreater(q3[1], p2[1])
         self.assertIn('no overlapping', self.ok('overlaps', '/c'))
 
     def test_layout_brings_side_inputs_in_from_below(self):
@@ -511,6 +513,47 @@ class BridgeTest(unittest.TestCase):
         out = self.ok('err', '/project1/noise1')
         self.assertTrue(out.startswith('E '), out)
         self.assertIn("name 'lfo9' is not defined  @ /project1/noise1", out)
+
+    def test_build_sets_parameters_after_every_op_exists(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        # seed names an OP that the spec makes two lines further down
+        self.ok('build', '/c', spec='n noiseTOP seed==len(op("later").name)\nmid nullTOP\nlater nullTOP\n')
+        self.assertEqual(self.w.globals['op']('/c/n').par.seed.expr, 'len(op("later").name)')
+
+    def test_what_is_added_is_not_set_down_on_a_wire(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb nullTOP\nc nullTOP\na -> b\na -> c\n')
+        for n, (x, y) in {'a': (0, 0), 'b': (900, 0), 'c': (170, -400)}.items():
+            op('/c/' + n).nodeX, op('/c/' + n).nodeY = x, y
+        # beside a, on its row, there is room for a node: but the wire a -> b runs there
+        self.ok('build', '/c', spec='t nullTOP\na -> t\n')
+        t = self.at('/c', 't')[0]
+        self.assertEqual(t[0], 170)
+        self.assertNotEqual(t[1], 0)
+
+    def test_a_change_reports_what_is_wrong_with_the_op_it_touched(self):
+        op = self.w.globals['op']
+        op('/project1/noise1')._errors = '  Error: Not enough sources specified (/project1/noise1)'
+        op('/project1/noise1')._warnings = '  Warning: Resolution is limited (/project1/noise1)'
+        out = self.ok('set', '/project1/noise1', seed=4)
+        self.assertEqual(out.splitlines()[1:], ['E noise1: Not enough sources specified', 'W noise1: Resolution is limited'])
+        # an OP with nothing wrong adds nothing to the reply
+        self.assertEqual(self.ok('set', '/project1/noise1', seed=5).splitlines()[0], 'seed=5')
+        op('/project1/noise1')._errors = op('/project1/noise1')._warnings = ''
+        self.assertEqual(self.ok('set', '/project1/noise1', seed=6), 'seed=6')
+
+    def test_a_folded_docked_dat_takes_no_room(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb nullTOP\nc nullTOP\nd nullTOP\na -> b\nc -> d\n')
+        keys = fake_td.OP('a_keys', 'textDAT', 'DAT', op('/c'), dock=op('/c/a'), showDocked=False)
+        self.ok('layout', '/c', yes=True)
+        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 130)          # the rows stay one node apart
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
+        keys.showDocked = True                                               # opened: now it needs its room
+        self.ok('layout', '/c')
+        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 240)
 
     def test_build_refuses_two_wires_into_one_input(self):
         self.ok('new', '/', 'baseCOMP', 'c')

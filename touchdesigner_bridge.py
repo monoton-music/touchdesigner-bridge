@@ -1115,13 +1115,30 @@ def _set_pars(o, values):
     out = []
     for name, v in values.items():
         p = _par(o, name)
-        if isinstance(v, str) and v.startswith('='):
-            p.expr = v[1:]
-            p.mode = ParMode.EXPRESSION
-        else:
-            p.mode = ParMode.CONSTANT
-            p.val = v
-        out.append('%s=%s' % (name, _num(p.eval())))
+        was = (p.mode, p.val, p.expr)
+        try:
+            if isinstance(v, str) and v.startswith('='):
+                p.expr = v[1:]
+                p.mode = ParMode.EXPRESSION
+            else:
+                p.mode = ParMode.CONSTANT
+                p.val = v
+            out.append('%s=%s' % (name, _num(p.eval())))
+        except Refused:
+            raise
+        except Exception as e:
+            # A value TD will not take, or an expression that fails: put the parameter back and say so,
+            # so that the answer is never a half-made change.
+            try:
+                if was[0] == ParMode.EXPRESSION:
+                    p.expr = was[2]
+                else:
+                    p.val = was[1]
+                p.mode = was[0]
+            except Exception:
+                pass
+            why = (str(e).strip().splitlines() or [e.__class__.__name__])[-1]
+            raise Refused('%s.%s was not set to %s: %s. It is as it was' % (o.name, name, v, why))
     return ' '.join(out)
 
 
@@ -1130,8 +1147,8 @@ def c_set(path, **values):
     """Set parameters. A value starting with = is set as an expression."""
     targets = _os(path)
     if len(targets) == 1:
-        return _set_pars(targets[0], values)
-    return '\n'.join('%s %s' % (t.path, _set_pars(t, values)) for t in targets)
+        return _set_pars(targets[0], values) + _trouble(targets)
+    return '\n'.join('%s %s' % (t.path, _set_pars(t, values)) for t in targets) + _trouble(targets)
 
 
 @_undoable
@@ -1168,7 +1185,7 @@ def c_new(parent, type, name=None, x=None, y=None, **pars):
         _beside(p, [o])
     _claim([o])
     s = '%s %s' % (o.path, o.OPType)
-    return s + (' ' + _set_pars(o, pars) if pars else '') + _hints([o])
+    return s + (' ' + _set_pars(o, pars) if pars else '') + _hints([o]) + _trouble([o])
 
 
 # What is worth knowing about a type at the moment one is made. Said by the command that makes it, so that it
@@ -1184,6 +1201,28 @@ _ON_CREATE = {
     'moviefileoutTOP': 'td.py record does this for a few seconds without leaving an OP behind',
     'rampTOP': 'its colours are the rows of the table DAT it makes beside itself (NAME_keys): read it with text, change it with write',
 }
+
+
+def _trouble(ops):
+    """What is wrong with OPs that were just made or changed, for the reply of the command that did it. They
+    are cooked first: an OP nothing looks at has not cooked yet, and until it has, TD knows of no error."""
+    out = []
+    for o in ops:
+        try:
+            o.cook()
+        except Exception:
+            pass
+        for label, method in (('E', 'errors'), ('E', 'scriptErrors'), ('W', 'warnings')):
+            try:
+                found = getattr(o, method)() or ''
+            except Exception:
+                found = ''
+            for ln in found.splitlines():
+                ln = re.sub(r'\s*\(/[^()]*\)$', '', ln.strip())
+                ln = re.sub(r'^(/\S*:)?\s*(Warning|Error):\s*', '', ln)
+                if ln and (label, o.name, ln) not in out:
+                    out.append((label, o.name, ln))
+    return ''.join('\n%s %s: %s' % t for t in out[:12]) + ('\n... %d more: td.py err' % (len(out) - 12) if len(out) > 12 else '')
 
 
 def _hints(ops):
@@ -1222,7 +1261,7 @@ def _create(p, type, name=None):
 def c_build(parent, spec):
     """Create and wire several OPs. Each spec line is "name type [par=value ...]", "a -> b" or "a -> b[1]"."""
     p = _o(parent)
-    made, links, tight, into, wired_at = {}, [], '', [], {}
+    made, links, tight, into, wired_at, later = {}, [], '', [], {}, []
     for n, raw in enumerate(spec.splitlines(), 1):
         m = re.match(r'^\s*(\S+)\s*->\s*([^\s\[#]+)(?:\[(\d+)\])?\s*(#.*)?$', raw)
         if m:
@@ -1258,8 +1297,11 @@ def c_build(parent, spec):
             except ValueError:
                 vals[k] = v
         if vals:
-            _set_pars(o, vals)
+            later.append((o, vals))
         made[parts[0]] = o
+    # Parameters are set once every OP of the spec exists, so that an expression may name one made further down.
+    for o, vals in later:
+        _set_pars(o, vals)
     for n, a, b, index in links:
         src = made.get(a) or _o(p.path.rstrip('/') + '/' + a)
         dst = made.get(b) or _o(p.path.rstrip('/') + '/' + b)
@@ -1282,7 +1324,7 @@ def c_build(parent, spec):
     elif made:
         tight = _beside(p, made.values(), into) + _backward(made.values())
     _claim(list(made.values()))
-    return 'made %d: %s; wired %d' % (len(made), ' '.join(o.name for o in made.values()), len(links)) + _hints(made.values()) + tight
+    return 'made %d: %s; wired %d' % (len(made), ' '.join(o.name for o in made.values()), len(links)) + _hints(made.values()) + tight + _trouble(made.values())
 
 
 _GAP = 40  # the space left between neighbouring nodes, along the wiring and between rows
@@ -1367,9 +1409,22 @@ def _layout(ops, x0=0, y0=0):
             along = False
 
     ends = [o for o in wired if not [x for x in outs(o) if depth[x.path] > depth[o.path]]]
-    for o in sorted(ends, key=lambda o: (-o.nodeY, order[o.path])) + wired:
+    # The end furthest along takes the top row, so the longest line through the network runs straight and the
+    # shorter branches hang under it. Ends that already sit at different heights keep that order.
+    for o in sorted(ends, key=lambda o: (-o.nodeY, -depth[o.path], order[o.path])) + wired:
         if o.path not in row:
             place(o, _max(cells) + 1 if cells else 0)
+    # Whatever order the rows were filled in, no wire may be left running along a row behind an OP that sits
+    # between its two ends: the OP it starts from goes down to the nearest clear row.
+    for _ in range(len(wired) * 2):
+        hit = [i for o in wired for i in ins(o) if row[i.path] == row[o.path]
+               and [c for c in cells[row[o.path]] if depth[i.path] < c < depth[o.path]]]
+        if not hit:
+            break
+        i = hit[0]
+        cells[row[i.path]].discard(depth[i.path])
+        row[i.path] = below(row[i.path], depth[i.path], depth[i.path])
+        cells.setdefault(row[i.path], set()).add(depth[i.path])
     cell = dict((o.path, (depth[o.path], row[o.path])) for o in wired)
     # An unwired OP that a wired one names in a parameter (an LFO behind an expression, the table of a Ramp)
     # goes under that OP. The rest go to the right in columns, past an empty one, so the network grows
@@ -1402,7 +1457,7 @@ def _layout(ops, x0=0, y0=0):
     cw, ch = {}, {}
     for o in ops:
         c, r = cell[o.path]
-        docks = len(getattr(o, 'docked', []) or [])
+        docks = len(_shown_docks(o))
         cw[c] = _max(cw.get(c, 130 + _GAP), int(getattr(o, 'nodeWidth', 130)) + _GAP, docks * 150 - 20 + _GAP)
         ch[r] = _max(ch.get(r, 90 + _GAP), int(getattr(o, 'nodeHeight', 90)) + _GAP + (110 if docks else 0))
     xs, ys = {0: 0}, {0: 0}
@@ -1414,7 +1469,8 @@ def _layout(ops, x0=0, y0=0):
         c, r = cell[o.path]
         # A taller node is centred on its row, so that the wires along the row stay level.
         o.nodeX, o.nodeY = x0 + xs[c], y0 - ys[r] - (int(getattr(o, 'nodeHeight', 90)) - 90) // 2
-        for k, dk in enumerate(getattr(o, 'docked', []) or []):
+        # Shown ones side by side under the OP; folded ones stay tucked under it for when they are opened.
+        for k, dk in enumerate(_shown_docks(o) + [d for d in (getattr(o, 'docked', []) or []) if _folded(d)]):
             dk.nodeX, dk.nodeY = o.nodeX + k * 150, o.nodeY - 110
     return (xs[_max(cw) + 1], ys[_max(ch) + 1]) if ops else (0, 0)
 
@@ -1439,14 +1495,25 @@ def _strange(ops):
     return [o for o in ops if o.id not in _state.placed]
 
 
+def _folded(o):
+    """A docked OP that is folded away under its owner: TD draws it as a small icon, not as a node."""
+    return getattr(o, 'dock', None) is not None and not getattr(o, 'showDocked', True)
+
+
+def _shown_docks(o):
+    return [d for d in (getattr(o, 'docked', []) or []) if not _folded(d)]
+
+
 def _extent(ops):
-    """The OPs with whatever is docked to them, and the rectangle they cover (left, bottom, right, top)."""
+    """The OPs with whatever is docked to them, and the rectangle they cover (left, bottom, right, top).
+    Docked OPs that are folded away come along in the list and do not count for the rectangle."""
     ops = list(ops)
     for o in list(ops):
         ops.extend(getattr(o, 'docked', []) or [])
-    return ops, (min(o.nodeX for o in ops), min(o.nodeY for o in ops),
-                 _max(o.nodeX + getattr(o, 'nodeWidth', 130) for o in ops),
-                 _max(o.nodeY + getattr(o, 'nodeHeight', 90) for o in ops))
+    seen = [o for o in ops if not _folded(o)]
+    return ops, (min(o.nodeX for o in seen), min(o.nodeY for o in seen),
+                 _max(o.nodeX + getattr(o, 'nodeWidth', 130) for o in seen),
+                 _max(o.nodeY + getattr(o, 'nodeHeight', 90) for o in seen))
 
 
 def _settle(p, ops, left, top):
@@ -1457,12 +1524,20 @@ def _settle(p, ops, left, top):
     paths = set(o.path for o in mine)
     others = [(c.nodeX - 20, c.nodeY - 20, c.nodeX + getattr(c, 'nodeWidth', 130) + 20,
                c.nodeY + getattr(c, 'nodeHeight', 90) + 20)
-              for c in p.children if c.path not in paths and c.OPType != 'annotateCOMP']
+              for c in p.children if c.path not in paths and c.OPType != 'annotateCOMP' and not _folded(c)]
+    # A wire that runs level between two of the others is taken ground too: an OP set down on it would hide it.
+    for c in p.children:
+        for i in ([] if c.path in paths else c.inputs):
+            if i is None or i.path in paths:
+                continue
+            ya, yb = i.nodeY + getattr(i, 'nodeHeight', 90) // 2, c.nodeY + getattr(c, 'nodeHeight', 90) // 2
+            if abs(ya - yb) <= 20 and i.nodeX + getattr(i, 'nodeWidth', 130) < c.nodeX:
+                others.append((i.nodeX + getattr(i, 'nodeWidth', 130), min(ya, yb) - 10, c.nodeX, _max(ya, yb) + 10))
     dx, step = left - x0, 90 + _GAP      # one row at a time
     for k in range(60):
         for dy in ((top - y1 - k * step, top - y1 + k * step) if k else (top - y1,)):
             # Node by node, not the rectangle around the group: an L-shaped group fits around a corner.
-            if not [1 for o in mine for bx0, by0, bx1, by1 in others
+            if not [1 for o in mine if not _folded(o) for bx0, by0, bx1, by1 in others
                     if o.nodeX + dx < bx1 and bx0 < o.nodeX + getattr(o, 'nodeWidth', 130) + dx
                     and o.nodeY + dy < by1 and by0 < o.nodeY + getattr(o, 'nodeHeight', 90) + dy]:
                 # Positions are worked out first and docked OPs set after their owners, so the result is the
@@ -1714,10 +1789,10 @@ def c_knob(comp, page='Controls', **knobs):
 
 @_undoable
 def _fit_box(box, ops):
-    """Size an annotation box around some OPs and whatever is docked to them."""
+    """Size an annotation box around some OPs and whatever is docked to them and shown."""
     ops = list(ops)
     for o in list(ops):
-        ops.extend(getattr(o, 'docked', []) or [])
+        ops.extend(_shown_docks(o))
     x0 = min(o.nodeX for o in ops) - 60
     y0 = min(o.nodeY for o in ops) - 60
     x1 = _max(o.nodeX + getattr(o, 'nodeWidth', 130) for o in ops) + 60
@@ -1813,7 +1888,7 @@ def c_layout(path, deep=False, yes=False):
 
 def _overlaps(p):
     """Pairs of OPs inside p whose nodes cover each other in the network editor."""
-    kids = [c for c in p.children if c.OPType != 'annotateCOMP']
+    kids = [c for c in p.children if c.OPType != 'annotateCOMP' and not _folded(c)]
     boxes = [(c, c.nodeX, c.nodeY, c.nodeX + getattr(c, 'nodeWidth', 130), c.nodeY + getattr(c, 'nodeHeight', 90)) for c in kids]
     out = []
     for i, (a, ax0, ay0, ax1, ay1) in enumerate(boxes):
@@ -1889,7 +1964,7 @@ def c_wire(src, dst, index=0, out=0):
     if index >= len(b.inputConnectors):
         raise Refused('%s has %d inputs' % (b.path, len(b.inputConnectors)))
     b.inputConnectors[index].connect(a.outputConnectors[out])
-    return '%s -> %s[%d]' % (a.path, b.path, index)
+    return '%s -> %s[%d]' % (a.path, b.path, index) + _trouble([b])
 
 
 @_undoable

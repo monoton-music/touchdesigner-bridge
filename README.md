@@ -118,7 +118,7 @@ python3 td.py layout /project1               # arrange the nodes along the wirin
 python3 td.py shot /project1                 # a picture of the TD window alone, with /project1 framed in the network editor
 python3 td.py ls /project1 --pos             # the children with where each sits
 python3 td.py look /project1/null_final                               # the picture as numbers: tones, black and clipped area, hues
-python3 td.py overlaps /project1                                # OPs lying on top of each other in the network editor
+python3 td.py overlaps /project1                                # OPs lying on top of each other, and wires that run right to left
 python3 td.py trace /project1/cam ty rz frames=300              # follow parameters over time: range, speed, jolts, reversals
 python3 td.py motion /project1/null_final                             # how it moves: change per step, flow speed and direction, a contact sheet
 python3 td.py motion /project1/null_final --crop 720,360,480,360      # the same for one region at full size
@@ -131,7 +131,21 @@ python3 td.py rm '/project1/tmp*' --yes      # every match; without --yes, lists
 python3 td.py undo
 ```
 
-OPs made by `new` and `build` have their node viewer on, so the network shows what each node makes. `build` into an empty COMP also arranges the nodes along the wiring. In a COMP that already holds others, `build`, `new` and `copy` set what they add beside the OP it is wired to, at the nearest free spot. OPs wired into an existing wire sit on that wire; when there is no room between its two ends, the far end and everything to its right moves over as one piece, so that no wire has to turn back, and the reply says what moved. Nothing else moves. `layout` rearranges a whole COMP, so it refuses when the COMP holds OPs the bridge did not place; `--yes` is for when the owner asked for the network to be tidied. OPs the bridge placed and someone nudged since are arranged again and named in the reply. It keeps the chains in their top-to-bottom order, keeps boxes around their OPs, leaves the network where it was, and is one undo step. Viewers cost cook time; when a network gets heavy, turn them off with `python3 td.py flag '/project1/*' viewer=0`.
+OPs made by `new` and `build` have their node viewer on, so the network shows what each node makes. Viewers cost cook time; when a network gets heavy, turn them off with `python3 td.py flag '/project1/*' viewer=0`.
+
+Where the nodes go:
+
+- `build` into an empty COMP arranges the nodes along the wiring. The longest line through the network runs along the top row, further inputs come in from below, and the branches of a fan-out start in one column. An unwired OP that another names in a parameter (an LFO behind an expression, the table of a Ramp) goes under that OP.
+- In a COMP that already holds others, `build`, `new` and `copy` set what they add beside the OP it is wired to, at the nearest free spot. Nothing that was there moves.
+- OPs wired into an existing wire sit on that wire. When there is no room between its two ends, the far end and everything to its right moves over as one piece, so that no wire has to turn back, and the reply says what moved.
+- `layout` rearranges a whole COMP, so it refuses when the COMP holds OPs the bridge did not place. `--yes` is for when the owner asked for the network to be tidied. It keeps the chains in their top-to-bottom order, keeps boxes around their OPs, leaves the network where it was, and is one undo step. OPs the bridge placed and someone nudged since are arranged again and named in the reply.
+- The bridge remembers what it placed only while TD runs. After TD is opened again, every OP counts as someone else's, and so does one made through `py`.
+
+What a changing command says back:
+
+- `new`, `build`, `set` and `wire` cook the OPs they touched and list their errors and warnings in the reply. An OP that nothing looks at has not cooked, and until it has, TD knows of no error, so `err` alone would call a freshly built network clean.
+- `set` with a value TD will not take, or an expression that fails, is refused in one line and the parameter is put back.
+- `build` sets parameters after every OP of the spec exists, so an expression may name an OP made further down. Two wires into one input are refused before anything is made.
 
 Every command except `py` takes `--when 'EXPR'`.
 
@@ -146,6 +160,7 @@ Pictures and movies are saved as follows.
 - Without it they save under `touchdesigner-bridge/<pid>/img` in the temp folder and return the path.
 - The temp folder is not emptied when TD closes. The folder of a TD that has been gone for ten minutes is removed the next time any TD loads the bridge. Save what you want to keep somewhere else with `--file`.
 - `record` makes a Movie File Out TOP for the length of the recording and removes it afterwards.
+- `shot` saves a picture of the TD window and nothing else on the screen. With a COMP it first points the network editor at that COMP and frames it, which changes what the editor shows. On macOS `td.py` takes it with `screencapture`, and the terminal needs Screen Recording permission. On Windows TD takes the picture of its own window, so it also works from a shell without a desktop, such as SSH or WSL.
 
 
 `python3 td.py help` prints the full list. What to know before use (workflow, how TD behaves, build examples) is collected in [GUIDE.md](GUIDE.md), which `python3 td.py guide` also prints. Every command takes `--limit N` for the number of lines and `--timeout S` for the wait.
@@ -209,7 +224,7 @@ The fixed commands are not meant to cover the whole of TD.
 
 - Output is short by default. Only non-default parameters are returned, lists are capped, and when a list is cut, the remaining count and a way to narrow it are added.
 - One call is enough. `op` returns what is needed about one OP in a single call, and `build` creates and wires several OPs in a single call.
-- What is worth knowing is said at the moment it applies, as a `note` line. `new` and `build` name the setting a type needs when they make one, and `top` says when the picture is black, white all over or holds invalid values. That keeps the reading beforehand short. It is advice: the command does the same either way.
+- What is worth knowing is said at the moment it applies, as a `note` line. `new` and `build` name the setting a type needs when they make one, and `top` says when the picture is black, white all over or holds invalid values. The first command that builds points at the guide once, unless `td.py guide` has been run. That keeps the reading beforehand short. It is advice: the command does the same either way.
 - A wrong call gets a fix, not a traceback. A path that does not exist comes with near names that do exist, and a parameter that does not exist comes with near parameter names.
 - Images are saved shrunk by a whole factor, each pixel the mean of a block. Reading a 4K TOP as is is heavy, plain decimation drops points and thin lines, and with a fractional factor (1920 to 768 is 2.5) the number of pixels averaged varies from place to place, which can leave film grain and patterns one or two pixels wide uneven. Alpha is dropped, giving the image over black.
 
@@ -237,9 +252,11 @@ The commands under Commands were run against the real TD of these builds.
 
 | TouchDesigner | OS |
 |---|---|
-| 2025.32460 | Windows 11 (driven from WSL2) |
+| 2025.32460 | Windows 11 (driven over SSH, and from WSL2) |
 | 2025.33230 | macOS |
 | 2023.12600 | Windows 11 (driven from WSL2) |
+
+- The placement of nodes, `shot` and `tests/live.py` were run on the two 2025 builds only.
 
 - Older builds were not checked. On a build without a newer attribute the old name is used, and that fallback is covered by the tests that run against the stand-in for TD.
 - Working with POPs needs a build that has them, 2025 or later.
@@ -252,7 +269,16 @@ The commands under Commands were run against the real TD of these builds.
 python3 -m unittest discover -s tests
 ```
 
-`tests/fake_td.py` stands in for TD. Names and meanings were checked against the Python stubs bundled with TD 2025.32460 (`bin/Lib/tdi`) and the bundled offline help.
+`tests/fake_td.py` stands in for TD, and these tests need nothing else.
+
+```bash
+python3 td.py open scratch.toe
+python3 tests/live.py
+```
+
+`tests/live.py` needs a real TD with the bridge loaded. It covers what only the real thing shows: node sizes, docked DATs, connectors, undo, cooking and the picture of the window. It builds random networks of 6, 25 and 60 OPs, adds to them as if they were someone else's, scatters them and tidies them, and after each step checks that no node lies on another, no wire runs right to left, no wire is hidden behind a node, nothing that was there moved unasked, and TD reports no error. Everything happens inside one COMP it makes at the root and removes at the end.
+
+In `tests/fake_td.py`, names and meanings were checked against the Python stubs bundled with TD 2025.32460 (`bin/Lib/tdi`) and the bundled offline help.
 
 To avoid depending on a particular build, only long-standing APIs are used, and builds without a newer attribute fall back to the old name.
 
