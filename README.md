@@ -73,7 +73,8 @@ The target and the location of TouchDesigner are chosen as follows.
 
 - With several TDs open, pass part of the .toe name or the pid to `--to`. The `TOUCHDESIGNER_BRIDGE_TO` environment variable also works.
 - `python3 td.py status` lists the TDs that are responding.
-- TouchDesigner is looked for in the default location (`C:\Program Files\Derivative` on Windows, `/Applications` on macOS). When several builds are installed, the newest is chosen.
+- TouchDesigner is looked for in the default location (`C:\Program Files\Derivative` on Windows, `/Applications` on macOS). A TD that is already running, or the one used last, is preferred; otherwise the newest installed build is chosen.
+- `td.py open` reads the build an existing .toe was saved with and opens it with that build when it is installed. If it is not installed, a newer build is used, and never an older one: an older build skips what it does not know (every POP, in a 2023 build), and saving from it loses that.
 - If it is somewhere else, or you want a particular build, set `TOUCHDESIGNER_BIN` to its bin folder. On macOS that is `Contents/MacOS` inside the app (for example `/Applications/TouchDesigner.app/Contents/MacOS`).
 
 Only the Python standard library is required.

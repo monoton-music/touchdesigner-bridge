@@ -73,7 +73,8 @@ exec(open(r'C:\path\to\touchdesigner-bridge\touchdesigner_bridge.py', encoding='
 
 - TD を複数起動している場合は、`--to` に .toe の名前の一部か pid を指定します。環境変数 `TOUCHDESIGNER_BRIDGE_TO` でも指定できます。
 - `python3 td.py status` で、応答している TD の一覧を表示できます。
-- TouchDesigner は既定のインストール先から探します（Windows は `C:\Program Files\Derivative`、macOS は `/Applications`）。複数のビルドがある場合は、最も新しいものを選びます。
+- TouchDesigner は既定のインストール先から探します（Windows は `C:\Program Files\Derivative`、macOS は `/Applications`）。すでに起動している TD か、前回使用した TD を優先し、どちらもなければ最も新しいビルドを選びます。
+- `td.py open` は、既存の .toe を保存したビルドを読み取り、そのビルドがインストールされていればそれで開きます。インストールされていなければ、より新しいビルドで開き、古いビルドでは開きません。古いビルドは知らない要素を読み飛ばすので（2023 のビルドでは POP の全て）、そのまま保存すると失われます。
 - インストール先が異なる場合や、特定のビルドを使いたい場合は、`TOUCHDESIGNER_BIN` に bin フォルダを指定します。macOS ではアプリの中の `Contents/MacOS` です（例: `/Applications/TouchDesigner.app/Contents/MacOS`）。
 
 必要なものは Python の標準ライブラリだけです。調査には次のコマンドを使用します。

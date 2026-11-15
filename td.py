@@ -244,24 +244,78 @@ def _build_of(path):
     return [int(n) for n in re.findall(r'\d+', path)]
 
 
+def installed_bins():
+    """The bin folders of the builds in the default location, the oldest first."""
+    import glob
+    if sys.platform == 'darwin':
+        # The app is named with its build (TouchDesigner 2025.33230.app); the tools sit in Contents/MacOS.
+        found = glob.glob('/Applications/TouchDesigner*.app/Contents/MacOS')
+    else:
+        root = '/mnt/c/Program Files' if IS_WSL else os.environ.get('ProgramFiles', r'C:\Program Files')
+        found = glob.glob(os.path.join(root, 'Derivative', 'TouchDesigner*', 'bin'))
+    return sorted(found, key=_build_of)
+
+
 def find_bin(base):
     """The TouchDesigner bin folder. Tries the environment variable, a running TD, a TD seen before, then the default location."""
-    import glob
     d = os.environ.get('TOUCHDESIGNER_BIN')
     if not d:
         seen = [a.get('bin') for _, a in instances(base) if a.get('bin')]
         d = from_td(seen[0]) if seen else _cache().get('bin')
     if not d or not os.path.isdir(d):
-        if sys.platform == 'darwin':
-            # The app is named with its build (TouchDesigner 2025.33230.app); the tools sit in Contents/MacOS.
-            found = sorted(glob.glob('/Applications/TouchDesigner*.app/Contents/MacOS'), key=_build_of)
-        else:
-            root = '/mnt/c/Program Files' if IS_WSL else os.environ.get('ProgramFiles', r'C:\Program Files')
-            found = sorted(glob.glob(os.path.join(root, 'Derivative', 'TouchDesigner*', 'bin')))
+        found = installed_bins()
         d = found[-1] if found else None
     if d:
         _cache({'bin': d})
     return d
+
+
+def _build_in(text):
+    """A build number (2025.32460) found in a path or a line of text, as a pair of numbers. None without one."""
+    m = re.search(r'(?<!\d)(\d{4})\.(\d{4,6})(?!\d)', text or '')
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def toe_build(bin_dir, file):
+    """The build a .toe was saved with, or None when it cannot be read. toeexpand -b prints it without expanding."""
+    exe = os.path.join(bin_dir, 'toeexpand' + ('' if sys.platform == 'darwin' else '.exe'))
+    try:
+        r = subprocess.run([exe, '-b', to_td(os.path.abspath(file))], cwd=bin_dir, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in r.stdout.splitlines():
+        if line.startswith('build '):
+            return _build_in(line)
+    return None
+
+
+def bin_for(file, bin_dir, bins=None):
+    """The bin folder to open file with, and a line to tell the user (or None). bin_dir is the usual choice.
+
+    A build older than the one that saved a project skips what it does not know (every POP, in a 2023 build),
+    and saving from it loses that for good. So a project goes to the build that saved it when that is
+    installed, and otherwise never to an older one. TOUCHDESIGNER_BIN is taken as said.
+    Returns (None, why) when only older builds are there.
+    """
+    if os.environ.get('TOUCHDESIGNER_BIN') or not os.path.exists(file):
+        return bin_dir, None
+    saved = toe_build(bin_dir, file)
+    if saved is None or _build_in(bin_dir) == saved:
+        return bin_dir, None
+    bins = installed_bins() if bins is None else bins
+    name = '%d.%d' % saved
+    same = [b for b in bins if _build_in(b) == saved]
+    if same:
+        return same[-1], 'opening with build %s, the build that saved this project' % name
+    usual = _build_in(bin_dir)
+    if usual is None or usual > saved:
+        return bin_dir, None
+    newer = [b for b in bins if (_build_in(b) or (0, 0)) > saved]
+    if newer:
+        return newer[0], 'opening with build %d.%d: this project was saved with %s, which is not installed' % (_build_in(newer[0]) + (name,))
+    return None, ('This project was saved with build %s, and only older builds were found. An older build skips what it '
+                  'does not know, and saving from it loses that. Install %s or later, or set TOUCHDESIGNER_BIN to open it anyway.'
+                  % (name, name))
 
 
 LOADER = 'local/touchdesigner_bridge'
@@ -532,6 +586,12 @@ def main():
             print({'created': 'created %s', 'already': 'already installed: %s',
                    'installed': 'installed into %s. the original is kept as .bak'}[state] % file)
             return 0
+        bin_dir, said = bin_for(file, bin_dir)
+        if bin_dir is None:
+            print(said, file=sys.stderr)
+            return 2
+        if said:
+            print(said)
         before = {a.get('pid') for _, a in instances(base)}
         launch(bin_dir, file)
         end = time.time() + float(kw.get('wait', 90))

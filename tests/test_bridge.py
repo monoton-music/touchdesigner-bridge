@@ -1100,6 +1100,63 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(toc(old + '.bak'), lines)
             self.assertEqual([n for n in os.listdir(base) if n.startswith('work-')], [])
 
+    @unittest.skipUnless(os.name == 'posix', 'the stand-in tool is a shell script')
+    def test_a_project_opens_with_the_build_that_saved_it(self):
+        # Three installs, each with a toeexpand that only prints the build the project was saved with.
+        old_env = os.environ.pop('TOUCHDESIGNER_BIN', None)
+        try:
+            with tempfile.TemporaryDirectory() as base:
+                ext = '' if sys.platform == 'darwin' else '.exe'
+                saved = os.path.join(base, 'saved')
+
+                def install(build):
+                    d = os.path.join(base, 'TouchDesigner.' + build, 'bin')
+                    os.makedirs(d)
+                    with open(os.path.join(d, 'toeexpand' + ext), 'w') as fp:
+                        fp.write('#!/bin/sh\necho "version 099"\necho "build $(cat "%s")"\nexit 1\n' % saved)
+                    os.chmod(os.path.join(d, 'toeexpand' + ext), 0o755)
+                    return d
+
+                def was_saved_with(build):
+                    with open(saved, 'w') as fp:
+                        fp.write(build)
+
+                b23, b25a, b25b = install('2023.12600'), install('2025.32280'), install('2025.32460')
+                bins = [b23, b25a, b25b]
+                toe = os.path.join(base, 'p.toe')
+                open(toe, 'w').close()
+
+                was_saved_with('2025.32460')
+                self.assertEqual(td.toe_build(b23, toe), (2025, 32460))
+                # The usual choice is an older build: the project goes to the one that saved it.
+                got, said = td.bin_for(toe, b23, bins)
+                self.assertEqual(got, b25b)
+                self.assertIn('2025.32460', said)
+                self.assertEqual(td.bin_for(toe, b25b, bins), (b25b, None))
+                # Its own build is not installed: the nearest newer one, never an older one.
+                was_saved_with('2025.32300')
+                got, said = td.bin_for(toe, b23, bins)
+                self.assertEqual(got, b25b)
+                self.assertIn('not installed', said)
+                # A newer usual choice is left alone.
+                self.assertEqual(td.bin_for(toe, b25b, [b23, b25b]), (b25b, None))
+                # Only older builds: refused, with the reason.
+                was_saved_with('2026.10000')
+                got, said = td.bin_for(toe, b23, bins)
+                self.assertIsNone(got)
+                self.assertIn('2026.10000', said)
+                # A build named by hand is taken as said, and a file that does not exist yet has no build.
+                os.environ['TOUCHDESIGNER_BIN'] = b23
+                self.assertEqual(td.bin_for(toe, b23, bins), (b23, None))
+                del os.environ['TOUCHDESIGNER_BIN']
+                self.assertEqual(td.bin_for(os.path.join(base, 'new.toe'), b23, bins), (b23, None))
+                # A tool that says nothing readable leaves the usual choice.
+                was_saved_with('unknown')
+                self.assertEqual(td.bin_for(toe, b23, bins), (b23, None))
+        finally:
+            if old_env is not None:
+                os.environ['TOUCHDESIGNER_BIN'] = old_env
+
     def test_when_lengthens_the_client_wait(self):
         # The TD side holds the command for up to --wait seconds, so the client has to wait at least that long.
         seen = []
