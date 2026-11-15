@@ -329,6 +329,235 @@ class BridgeTest(unittest.TestCase):
         self.assertLess(boxes[1].nodeY + boxes[1].nodeHeight, boxes[0].nodeY)
         self.assertIn('name the OPs', self.cmd('box', '/c', 'Empty')['error'])
 
+    def at(self, comp, *names):
+        op = self.w.globals['op']
+        return [(op(comp + '/' + n).nodeX, op(comp + '/' + n).nodeY) for n in names]
+
+    def test_layout_keeps_each_chain_on_its_own_row(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='p1 nullTOP\np2 nullTOP\nq1 nullTOP\nq2 nullTOP\nq3 nullTOP\n'
+                                    'p1 -> p2\nq1 -> q2\nq2 -> q3\n')
+        p1, p2, q1, q2, q3 = self.at('/c', 'p1', 'p2', 'q1', 'q2', 'q3')
+        self.assertEqual(p1[1], p2[1])
+        self.assertEqual(len(set([q1[1], q2[1], q3[1]])), 1)
+        # q3 is alone in its column, and still stays with q1 and q2 instead of moving up beside p2
+        self.assertLess(q3[1], p2[1])
+        self.assertIn('no overlapping', self.ok('overlaps', '/c'))
+
+    def test_layout_brings_side_inputs_in_from_below(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a1 nullTOP\na2 nullTOP\na3 nullTOP\nb1 nullTOP\nmix levelTOP\nout nullTOP\n'
+                                    'a1 -> a2\na2 -> a3\na3 -> mix\nb1 -> mix[1]\nmix -> out\n')
+        a1, a2, a3, b1, mix, out = self.at('/c', 'a1', 'a2', 'a3', 'b1', 'mix', 'out')
+        self.assertEqual(len(set(y for x, y in (a1, a2, a3, mix, out))), 1)      # the main line is straight
+        self.assertLess(b1[1], mix[1])                                         # the second input sits below it,
+        self.assertEqual(b1[0], a3[0])                                         # in the column just before the mix
+
+    def test_layout_lines_up_a_fan_out_and_shows_a_wire_that_skips_ahead(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='src nullTOP\nl1 nullTOP\nl2 nullTOP\nr1 nullTOP\njoin levelTOP\n'
+                                    'src -> l1\nl1 -> l2\nsrc -> r1\nl2 -> join\nr1 -> join[1]\n')
+        src, l1, r1 = self.at('/c', 'src', 'l1', 'r1')
+        self.assertEqual(l1[0], r1[0])
+        self.assertGreater(l1[0], src[0])
+        self.ok('new', '/', 'baseCOMP', 'bloom')
+        self.ok('build', '/bloom', spec='src nullTOP\nblur nullTOP\nlift levelTOP\nadd levelTOP\n'
+                                        'src -> blur\nblur -> lift\nlift -> add\nsrc -> add[1]\n')
+        src, blur, lift, add = self.at('/bloom', 'src', 'blur', 'lift', 'add')
+        self.assertEqual(len(set([blur[1], lift[1], add[1]])), 1)
+        # src -> add would be hidden behind blur and lift on their row, so src sits a row lower
+        self.assertLess(src[1], add[1])
+        # with the direct wire on the first input, it is the straight line and the chain dips under it
+        self.ok('new', '/', 'baseCOMP', 'glow')
+        self.ok('build', '/glow', spec='src nullTOP\nblur nullTOP\nadd levelTOP\nsrc -> add\nsrc -> blur\nblur -> add[1]\n')
+        src, blur, add = self.at('/glow', 'src', 'blur', 'add')
+        self.assertEqual(src[1], add[1])
+        self.assertLess(blur[1], add[1])
+        self.assertTrue(src[0] < blur[0] < add[0])
+
+    def test_build_into_a_network_sets_the_new_ops_beside_what_they_are_wired_to(self):
+        op = self.w.globals['op']
+        hand = {'noise1': (-400, 300), 'null1': (-150, 300), 'script1': (-400, 0), 'text1': (500, 500), 'fx': (90, 300)}
+        for n, (x, y) in hand.items():
+            op('/project1/' + n).nodeX, op('/project1/' + n).nodeY = x, y
+        self.ok('build', '/project1', spec='soft levelTOP\nfinal nullTOP\nnoise1 -> soft\nsoft -> final\n')
+        # nothing that was there has moved
+        self.assertEqual(dict(zip(hand, self.at('/project1', *hand))), hand)
+        soft, final = self.at('/project1', 'soft', 'final')
+        # to the right of noise1, in wiring order, and moved off its row because null1 is already there
+        self.assertEqual(soft[0], -400 + 130 + 40)
+        self.assertGreater(final[0], soft[0])
+        self.assertEqual(soft[1], final[1])
+        self.assertNotEqual(soft[1], 300)
+        self.assertLess(abs(soft[1] - 300), 300)
+        self.assertIn('no overlapping', self.ok('overlaps', '/project1', deep=False))
+        # put between two OPs that sit close together, it cannot fit: it goes below, and build says which wire
+        # now runs backwards instead of moving what was there
+        out = self.ok('build', '/project1', spec='mid levelTOP\nnoise1 -> mid\nmid -> null1\n')
+        self.assertIn('note  mid -> null1 runs right to left: there was no room beside null1', out)
+        self.assertEqual(dict(zip(hand, self.at('/project1', *hand))), hand)
+        self.ok('rm', '/project1/mid', yes=True)
+        self.assertNotIn('right to left', self.ok('build', '/project1', spec='tail nullTOP\nfinal -> tail\n'))
+        # an OP that feeds an existing one goes to its left
+        self.ok('build', '/project1', spec='pre nullTOP\npre -> noise1\n')
+        self.assertEqual(self.at('/project1', 'pre')[0][0], -400 - 40 - 130)
+        # one wired to nothing goes to the right of everything; so does a bare new
+        self.ok('build', '/project1', spec='spare noiseTOP\n')
+        self.ok('new', '/project1', 'nullTOP', 'extra')
+        spare, extra = self.at('/project1', 'spare', 'extra')
+        self.assertGreater(spare[0], 500 + 130)
+        self.assertGreater(extra[0], spare[0])
+        self.assertEqual(dict(zip(hand, self.at('/project1', *hand))), hand)
+        self.assertIn('no overlapping', self.ok('overlaps', '/project1', deep=False))
+
+    def test_layout_leaves_a_network_someone_arranged(self):
+        op = self.w.globals['op']
+        out = self.cmd('layout', '/project1')
+        self.assertFalse(out['ok'])
+        self.assertIn('5 of 5 OPs were not placed by td.py', out['error'])
+        self.assertIn('--yes', out['error'])
+        self.assertEqual(self.at('/project1', 'noise1', 'null1'), [(0, 0), (0, 0)])
+        # what the bridge built by itself it may arrange again without being asked
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb nullTOP\na -> b\n')
+        self.ok('layout', '/c')
+        # an OP of its own that someone nudged by hand is arranged again, and the reply says which
+        op('/c/b').nodeY -= 400
+        out = self.ok('layout', '/c')
+        self.assertIn('arranged 2 OPs in /c\nnote  1 had been moved by hand since td.py placed them', out)
+        self.assertIn(': b. undo puts them back', out)
+        self.assertEqual(op('/c/b').nodeY, op('/c/a').nodeY)
+        # an OP someone else made is a different matter: nothing moves until asked
+        fake_td.OP('theirs', 'nullTOP', 'TOP', op('/c'), nodeX=900, nodeY=900)
+        out = self.cmd('layout', '/c')
+        self.assertIn('/c: 1 of 3 OPs were not placed by td.py (theirs)', out['error'])
+        self.assertEqual((op('/c/theirs').nodeX, op('/c/theirs').nodeY), (900, 900))
+        # asked to, it arranges, and the network is then its own to keep tidy
+        self.assertEqual(self.ok('layout', '/c', yes=True), 'arranged 3 OPs in /c')
+        self.assertEqual(self.ok('layout', '/c'), 'arranged 3 OPs in /c')
+        # a COMP below is checked too
+        self.assertIn('/project1/fx: 1 of 1', self.cmd('layout', '/', deep=True)['error'])
+
+    def test_layout_when_asked_keeps_the_order_someone_gave(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a1 nullTOP\na2 nullTOP\nb1 nullTOP\nb2 nullTOP\na1 -> a2\nb1 -> b2\n')
+        # someone puts the b chain above the a chain, roughly
+        for n, (x, y) in {'b1': (13, 900), 'b2': (480, 870), 'a1': (-60, 410), 'a2': (300, 455)}.items():
+            op('/c/' + n).nodeX, op('/c/' + n).nodeY = x, y
+        self.ok('layout', '/c', yes=True)
+        a1, a2, b1, b2 = self.at('/c', 'a1', 'a2', 'b1', 'b2')
+        self.assertEqual((b1[1], a1[1]), (b2[1], a2[1]))
+        self.assertGreater(b1[1], a1[1])
+        # and the network stays where it was: its left edge and its top edge have not moved
+        self.assertEqual((min(a1[0], b1[0]), b1[1]), (-60, 900))
+        # boxes set side by side stay side by side, in their order; boxes that were stacked stay stacked
+        self.ok('box', '/c', 'A', 'a1', 'a2')
+        self.ok('box', '/c', 'B', 'b1', 'b2')
+        boxes = dict((b.par.Titletext.val, b) for b in op('/c').children if b.OPType == 'annotateCOMP')
+        self.ok('layout', '/c')
+        self.assertLess(boxes['B'].nodeY + boxes['B'].nodeHeight, boxes['A'].nodeY)
+        boxes['B'].nodeX, boxes['B'].nodeY = boxes['A'].nodeX + boxes['A'].nodeWidth + 400, boxes['A'].nodeY
+        op('/c/b1').nodeX, op('/c/b1').nodeY = boxes['B'].nodeX + 60, boxes['B'].nodeY + 60
+        op('/c/b2').nodeX, op('/c/b2').nodeY = boxes['B'].nodeX + 260, boxes['B'].nodeY + 60
+        self.ok('layout', '/c', yes=True)
+        self.assertGreater(boxes['B'].nodeX, boxes['A'].nodeX + boxes['A'].nodeWidth)
+        self.assertEqual(boxes['B'].nodeY, boxes['A'].nodeY)
+        self.assertIn('no overlapping', self.ok('overlaps', '/c'))
+
+    def test_layout_sets_the_rest_to_the_right_of_a_single_box(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb levelTOP\nc nullTOP\nd nullTOP\na -> b\nb -> c\nc -> d\n')
+        self.ok('box', '/c', 'Source', 'a', 'b')
+        self.ok('layout', '/c')
+        box = [o for o in op('/c').children if o.OPType == 'annotateCOMP'][0]
+        a, b, c, d = self.at('/c', 'a', 'b', 'c', 'd')
+        self.assertTrue(a[0] < b[0] < box.nodeX + box.nodeWidth < c[0] < d[0])     # every wire still runs rightward
+        self.assertIn('no overlapping', self.ok('overlaps', '/c'))
+
+    def test_build_into_a_wire_makes_room_instead_of_turning_a_wire_back(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb levelTOP\nc nullTOP\nlow nullTOP\na -> b\nb -> c\n')
+        hand = {'a': (0, 0), 'b': (170, 0), 'c': (340, 0), 'low': (10, -300)}
+        for n, (x, y) in hand.items():
+            op('/c/' + n).nodeX, op('/c/' + n).nodeY = x, y
+        out = self.ok('build', '/c', spec='soft levelTOP\nmask noiseTOP\nb -> soft\nmask -> soft[1]\nsoft -> c\n')
+        a, b, c, low, soft, mask = self.at('/c', 'a', 'b', 'c', 'low', 'soft', 'mask')
+        # what is left of the wire stays; c moves right by exactly the room soft needs, on the same row
+        self.assertEqual((a, b, low), ((0, 0), (170, 0), (10, -300)))
+        self.assertEqual(soft, (340, 0))
+        self.assertEqual(c, (510, 0))
+        self.assertLess(mask[1], soft[1])
+        self.assertIn('note  made room on the wire b -> c: moved c right by 170', out)
+        self.assertNotIn('right to left', out)
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
+        # with room already there, nothing moves and nothing is said
+        op('/c/c').nodeX = 900
+        out = self.ok('build', '/c', spec='last nullTOP\nsoft -> last\nlast -> c\n')
+        self.assertEqual(self.at('/c', 'c', 'last'), [(900, 0), (510, 0)])
+        self.assertNotIn('note', out)
+
+    def test_room_made_by_the_bridge_does_not_count_as_moved_by_hand(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb levelTOP\nc nullTOP\na -> b\nb -> c\n')
+        self.assertIn('made room', self.ok('build', '/c', spec='mid levelTOP\nb -> mid\nmid -> c\n'))
+        self.assertEqual(self.ok('layout', '/c'), 'arranged 4 OPs in /c')
+
+    def test_err_includes_what_expressions_and_callbacks_raised(self):
+        op = self.w.globals['op']
+        op('/project1/noise1').scriptErrors = lambda recurse=False: "noise1: Error: name 'lfo9' is not defined (/project1/noise1)"
+        out = self.ok('err', '/project1/noise1')
+        self.assertTrue(out.startswith('E '), out)
+        self.assertIn("name 'lfo9' is not defined  @ /project1/noise1", out)
+
+    def test_build_refuses_two_wires_into_one_input(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        out = self.cmd('build', '/c', spec='a noiseTOP\nb noiseTOP\nmix levelTOP\na -> mix\nb -> mix\n')
+        self.assertIn('line 5: mix[0] is already wired on line 4', out['error'])
+        self.assertIn('mix[1]', out['error'])
+        self.assertEqual(self.w.globals['op']('/c').children, [])
+
+    def test_layout_sets_a_late_side_input_near_and_an_unwired_op_under_what_names_it(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='s1 nullTOP\ns2 levelTOP\ns3 nullTOP\ns4 nullTOP\ns5 levelTOP\nend nullTOP\n'
+                                    'early nullTOP\ne2 nullTOP\nlate nullTOP\nspare textDAT\nlfo noiseCHOP\n'
+                                    'drive noiseTOP seed==op("lfo")["chan1"]\n'
+                                    's1 -> s2\ns2 -> s3\ns3 -> s4\ns4 -> s5\ns5 -> end\n'
+                                    'early -> e2\ne2 -> s2[1]\nlate -> s5[1]\ndrive -> s1\n')
+        s5, end, late, e2, lfo, drive, spare = self.at('/c', 's5', 'end', 'late', 'e2', 'lfo', 'drive', 'spare')
+        # late joins far along the row: it sits one row down in the column before s5, not under the rows that
+        # early and e2 needed at the other end
+        self.assertEqual(late[1], e2[1])
+        self.assertLess(late[0], s5[0])
+        self.assertGreater(late[0], e2[0] + 130 + 40 + 130)
+        # lfo is wired to nothing, but drive reads it in an expression: it goes under drive
+        self.assertEqual(lfo[0], drive[0])
+        self.assertLess(lfo[1], drive[1])
+        # spare belongs to nothing: to the right, past an empty column
+        self.assertGreater(spare[0], end[0] + 130 + 40 + 130)
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
+
+    def test_overlaps_names_wires_that_turn_back_and_ls_gives_positions(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb nullTOP\na -> b\n')
+        op('/c/b').nodeX = -400
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs\n/c  1 wires run right to left: a -> b')
+        self.assertIn('b nullTOP  at -400 0', self.ok('ls', '/c', pos=True))
+        self.assertNotIn(' at ', self.ok('ls', '/c'))
+
+    def test_box_does_not_move_what_someone_placed(self):
+        op = self.w.globals['op']
+        op('/project1/noise1').nodeX, op('/project1/noise1').nodeY = 700, 650
+        op('/project1/null1').nodeX, op('/project1/null1').nodeY = 950, 600
+        self.ok('box', '/project1', 'Source', 'noise1', 'null1')
+        self.assertEqual(self.at('/project1', 'noise1', 'null1'), [(700, 650), (950, 600)])
+        box = [b for b in op('/project1').children if b.OPType == 'annotateCOMP'][0]
+        self.assertTrue(box.nodeX < 700 and 950 + 130 < box.nodeX + box.nodeWidth)
+        self.assertTrue(box.nodeY < 600 and 650 + 90 < box.nodeY + box.nodeHeight)
+
     def test_look_describes_the_picture(self):
         try:
             import numpy as np
@@ -655,7 +884,7 @@ class BridgeTest(unittest.TestCase):
         self.ok('new', '/', 'noiseTOP', 'b')
         td.send(self.qdir(), '.py', 'for n in ("a", "b"):\n    op("/" + n).nodeX = 0; op("/" + n).nodeY = 0', 5)
         self.assertIn('a/b', self.ok('overlaps', '/', deep=False))
-        self.ok('layout', '/')
+        self.ok('layout', '/', yes=True)
         self.assertIn('no overlapping', self.ok('overlaps', '/', deep=False))
 
     def test_layout_deep_and_boxes(self):
@@ -663,7 +892,7 @@ class BridgeTest(unittest.TestCase):
         self.ok('new', '/project1/inner', 'noiseTOP', 'p')
         self.ok('new', '/project1/inner', 'noiseTOP', 'q')
         self.ok('box', '/project1', 'Group', 'noise1', 'null1')
-        out = self.ok('layout', '/project1', deep=True)
+        out = self.ok('layout', '/project1', deep=True, yes=True)
         self.assertIn('COMPs below it', out)
         self.assertIn('no overlapping', self.ok('overlaps', '/project1'))
 
@@ -816,6 +1045,37 @@ class ClientTest(unittest.TestCase):
                 self.assertEqual(seen[-1][1], want)
             self.assertEqual(seen[0][0], {'cmd': 'wait', 'args': [], 'kw': {'when': 'absTime.frame > 9'}})
             self.assertEqual(seen[1][0]['kw'], {'when': 'x', 'wait': 5})
+        finally:
+            td.pick, td.send, sys.argv, td.queue_dir = old
+
+    def test_building_before_reading_the_guide_is_pointed_out_once(self):
+        import contextlib
+        import io
+        old = (td.pick, td.send, sys.argv, td.queue_dir)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, 'guide')
+        td.pick = lambda base, to=None: ('dir', None)
+        td.send = lambda d, ext, body, timeout: {'ok': True, 'result': 'done'}
+        td.queue_dir = lambda: base
+
+        def run(*argv):
+            sys.argv = ['td.py'] + list(argv)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(td.main(), 0)
+            return out.getvalue()
+        try:
+            self.assertNotIn('note', run('ls', '/a'))                     # looking needs no guide
+            self.assertIn('note  read the guide before building', run('new', '/a', 'nullTOP'))
+            self.assertEqual(run('new', '/a', 'nullTOP'), 'done\n')        # said once, not every time
+            os.remove(os.path.join(base, 'guide_seen'))
+            self.assertIn('## Workflow', run('guide'))
+            self.assertEqual(run('build', '/a', '--f', os.devnull), 'done\n')   # read: nothing to say
+            # a reading counts for a working session, not for ever
+            long_ago = time.time() - td.GUIDE_FRESH - 60
+            os.utime(os.path.join(base, 'guide_seen'), (long_ago, long_ago))
+            self.assertIn('read the guide', run('layout', '/a'))
         finally:
             td.pick, td.send, sys.argv, td.queue_dir = old
 

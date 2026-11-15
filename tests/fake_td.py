@@ -4,6 +4,7 @@ Names and meanings follow the Python stubs bundled with TD 2025.32460 (bin/Lib/t
 The difference from the real thing is that run() only queues the call, and step() advances one frame.
 """
 import fnmatch
+import itertools
 import types
 
 
@@ -79,9 +80,13 @@ class Chan:
         return self.vals[0]
 
 
+_ids = itertools.count(1)
+
+
 class OP:
     def __init__(self, name, optype, family, parent=None, **kw):
         self.name = name
+        self.id = next(_ids)
         self.OPType = optype
         self.family = family
         self.parent = parent

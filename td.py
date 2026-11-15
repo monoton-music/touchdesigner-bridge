@@ -17,12 +17,12 @@ Inspect
                                        --crop X,Y,W,H looks at one region at full detail; --follow 'EXPR' [--size 240] keeps a moving
                                        thing centred (the expression gives its pixel x, y from the top left at every shot)
   td.py compare TOP TARGET par=value ...   The same frame of a TOP with and without a change: both as numbers, how much differs and where,
-                                       and a sheet of A, B and the difference. For a DAT: compare TOP DAT --swap 'OLD' --with 'NEW'
+                                       and a sheet of A, B and the difference. A flag works too (bypass=1). For a DAT: compare TOP DAT --swap 'OLD' --with 'NEW'
   td.py record PATH [--seconds 3] [--file F] [--codec h264]   Record a TOP to a movie file, to watch the motion as it plays
   td.py trace PATH PAR ... [frames=120]    Follow parameters over time: range, speed, jolts, reversals per second, and their shape
   td.py cook [PATH] [--n 20] [--frames 60] [--type '*TOP'] [--sort gpu]   Heaviest cook times first
   td.py mem [PATH] [--n 20] [--sort cpu]                     Largest memory use first
-  td.py ls [PATH] [--depth 1] [--type PAT] [--name PAT]      List children
+  td.py ls [PATH] [--depth 1] [--type PAT] [--name PAT] [--pos]   List children; --pos adds where each sits in the network
   td.py find [PATH] [--name PAT] [--type PAT] [--text STR] [--expr STR]
   td.py op PATH                        Summary of one OP (type, position, connections, parameters, errors, cook)
   td.py flow COMP                      All wiring inside a COMP as a -> b
@@ -35,10 +35,12 @@ Inspect
   td.py pix PATH [--u 0.5 --v 0.5]     Color of one point of a TOP
   td.py top PATH [--max 768] [--crop X,Y,W,H] [--file F]   Save a TOP as PNG and return the path. Shrinks the long side by a whole factor
                                        (0 keeps every pixel); --crop saves one region, in pixels from the top left
+  td.py shot [COMP] [--file F]         Save a picture of the TD window alone (macOS). With COMP, the network editor shows that COMP, framed, first:
+                                       the network as a person sees it, wires and all
   td.py wait --when 'EXPR'             Return the frame and the time once a Python expression is true; holds a shell script until then
   td.py conn PATH                      Inputs and outputs
   td.py types [PATTERN]                OP types that can be created
-  td.py doc NAME [--grep STR] [--start N]    Read the bundled help (noiseTOP, Noise_TOP, ...)
+  td.py doc NAME [--grep 'a|b'] [--start N]  Read the bundled help (noiseTOP, Noise_TOP, ...); --grep is a regular expression, case ignored
 
 Change (each one is a single undo step)
   td.py set PATH name=value ...        Set parameters (=expr for an expression)
@@ -47,14 +49,17 @@ Change (each one is a single undo step)
   td.py new PARENT TYPE [NAME] [--x N --y N] [name=value ...]   Create an OP
   td.py build PARENT -  |  build PARENT --f FILE   Create and wire several OPs. One per line:
                                        "name type [par=value ...]", "a -> b", "a -> b[1]"
+                                       in a COMP that holds others, the new OPs go beside what they are wired to. Wired into an existing
+                                       wire (b -> new, new -> c) they sit on it, and c and what is right of it move over when there is no room
   td.py copy SRC PARENT [NAME] | rename PATH NAME
   td.py wire SRC DST [--index 0] [--out 0] | unwire DST [--index 0]
-  td.py write PATH -  |  write PATH --f FILE     Replace DAT contents
+  td.py write PATH -  |  write PATH --f FILE     Replace DAT contents (a table DAT takes tab-separated rows)
                                        a shader DAT is marked GLSL, docked to its OP and compiled; errors come back
-  td.py move PATH X Y
-  td.py layout COMP [--deep]           Arrange the OPs along the wiring so none overlap; boxes keep their OPs and are refitted; --deep does every COMP below too
-  td.py overlaps [COMP]                OPs lying on top of each other in the network editor, here and in every COMP below
-  td.py box COMP 'TITLE' NAME ...       arrange these OPs of the COMP and put a titled box around them (one per stage)
+  td.py move PATH X Y                  Set where an OP sits (network units; a node is 130 wide and 90 high)
+  td.py layout COMP [--deep] [--yes]   Arrange the OPs along the wiring so none overlap; boxes keep their OPs and are refitted; --deep does every COMP below too
+                                       a COMP holding OPs td.py did not place is left alone without --yes (for when you were asked to tidy it)
+  td.py overlaps [COMP]                OPs lying on top of each other and wires running right to left, here and in every COMP below
+  td.py box COMP 'TITLE' NAME ...       arrange these OPs of the COMP and put a titled box around them (OPs someone else placed stay where they are)
   td.py note PATH 'TEXT'              comment shown on the node. In build, text after # on a line does the same
   td.py knob COMP Name=0.5@child.par  add a custom parameter to the COMP and drive child.par from it
                                        (several at once; without @... it only adds the parameter; --page Controls)
@@ -70,7 +75,7 @@ top, motion, compare and record save under the temp folder unless --file names a
 removed the next time a TD loads the bridge, once that TD has been gone for ten minutes.
 Every command except py takes --when 'EXPR' [--wait 60]: it runs in the first frame in which the Python expression is true,
   and is refused if that does not happen within --wait seconds. The expression sees the same names as py (op, absTime, ...).
-  Example: td.py top /project1/out --when 'absTime.seconds % 38 > 9' --max 0 --crop 800,400,320,180
+  Example: td.py top /project1/null_final --when 'absTime.seconds % 38 > 9' --max 0 --crop 800,400,320,180
 The folder can be changed with the TOUCHDESIGNER_BRIDGE_DIR environment variable.
 """
 import json
@@ -130,6 +135,88 @@ def queue_dir():
     # On Windows and macOS, the temp folder of the user running TD is visible as is.
     import tempfile
     return os.path.join(tempfile.gettempdir(), 'touchdesigner-bridge')
+
+
+GUIDE_FRESH = 12 * 3600   # how long a reading of the guide counts, in seconds: about one working session
+
+
+def guide_seen(mark=False):
+    """Whether the guide was printed lately. mark records that it was (or that its absence has been pointed
+    out once, which is enough)."""
+    path = os.path.join(queue_dir(), 'guide_seen')
+    try:
+        seen = time.time() - os.path.getmtime(path) < GUIDE_FRESH
+    except OSError:
+        seen = False
+    if mark:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as fp:
+                fp.write('')
+        except OSError:
+            pass
+    return seen
+
+
+def mac_window(pid):
+    """The id of the largest ordinary window of a process on macOS, or None. Standard library only."""
+    import ctypes
+    import ctypes.util
+    V, L = ctypes.c_void_p, ctypes.c_long
+    cg = ctypes.CDLL(ctypes.util.find_library('CoreGraphics'))
+    cf = ctypes.CDLL(ctypes.util.find_library('CoreFoundation'))
+    cg.CGWindowListCopyWindowInfo.restype, cg.CGWindowListCopyWindowInfo.argtypes = V, [ctypes.c_uint32, ctypes.c_uint32]
+    cf.CFArrayGetCount.restype, cf.CFArrayGetCount.argtypes = L, [V]
+    cf.CFArrayGetValueAtIndex.restype, cf.CFArrayGetValueAtIndex.argtypes = V, [V, L]
+    cf.CFDictionaryGetValue.restype, cf.CFDictionaryGetValue.argtypes = V, [V, V]
+    cf.CFStringCreateWithCString.restype, cf.CFStringCreateWithCString.argtypes = V, [V, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFNumberGetValue.argtypes = [V, L, V]
+    cf.CFRelease.argtypes = [V]
+    keys = {}
+
+    def num(d, name):
+        if name not in keys:
+            keys[name] = cf.CFStringCreateWithCString(None, name.encode(), 0x08000100)     # UTF-8
+        v = cf.CFDictionaryGetValue(d, keys[name])
+        out = ctypes.c_double()
+        return out.value if v and cf.CFNumberGetValue(v, 13, ctypes.byref(out)) else None  # 13: a double
+
+    info = cg.CGWindowListCopyWindowInfo(1, 0)      # the windows on screen
+    best = (0, None)
+    for n in range(cf.CFArrayGetCount(info) if info else 0):
+        w = cf.CFArrayGetValueAtIndex(info, n)
+        if num(w, 'kCGWindowOwnerPID') != pid or num(w, 'kCGWindowLayer') != 0:
+            continue
+        b = cf.CFDictionaryGetValue(w, keys.setdefault('kCGWindowBounds', cf.CFStringCreateWithCString(None, b'kCGWindowBounds', 0x08000100)))
+        area = (num(b, 'Width') or 0) * (num(b, 'Height') or 0) if b else 0
+        if area > best[0]:
+            best = (area, int(num(w, 'kCGWindowNumber')))
+    for k in keys.values():
+        cf.CFRelease(k)
+    if info:
+        cf.CFRelease(info)
+    return best[1]
+
+
+def shot(d, comp, file, timeout):
+    """Save a picture of the TD window, and only that window: what a person sees in the network editor."""
+    if sys.platform != 'darwin':
+        return 1, 'shot works on macOS only for now'
+    if comp:
+        # Show that COMP in the network editor, framed, before the picture is taken.
+        out = send(d, '.json', json.dumps({'cmd': 'show', 'args': [comp], 'kw': {}}), timeout)
+        if out is None or not out['ok']:
+            return 1, (out or {}).get('error', 'timeout')
+        time.sleep(0.5)     # the editor redraws on a later frame
+    wid = mac_window(int(os.path.basename(d)))
+    if wid is None:
+        return 1, 'the TD window is not on screen (minimised, or on another desktop)'
+    file = file or os.path.join(d, 'img', 'window.png')
+    os.makedirs(os.path.dirname(os.path.abspath(file)), exist_ok=True)
+    r = subprocess.run(['screencapture', '-x', '-o', '-l', str(wid), file], capture_output=True, text=True)
+    if r.returncode or not os.path.exists(file):
+        return 1, 'screencapture failed: %s. The terminal needs Screen Recording permission (System Settings > Privacy & Security)' % (r.stderr.strip() or r.returncode)
+    return 0, file
 
 
 def to_td(path):
@@ -387,6 +474,7 @@ def main():
             parts = [x for x in parts[1:] if argv[1].lower() in x.split('\n', 1)[0].lower()] or \
                 ['no such section. sections: ' + ', '.join(x.split('\n', 1)[0][3:] for x in parts[1:])]
         print(''.join(parts).strip())
+        guide_seen(mark=True)
         return 0
     cmd, rest = argv[0], argv[1:]
     if cmd == 'setup':
@@ -443,6 +531,10 @@ def main():
     if d is None:
         print(why, file=sys.stderr)
         return 2
+    if cmd == 'shot':
+        code, said = shot(d, args[0] if args else None, kw.get('file'), timeout)
+        print(said, file=sys.stderr if code else sys.stdout)
+        return code
     if cmd == 'py':
         if 'f' in kw:
             with open(kw['f'], encoding='utf-8') as fp:
@@ -503,6 +595,10 @@ def main():
     r = out.get('result')
     if r is not None:
         print(to_local(r) if isinstance(r, str) else json.dumps(r, ensure_ascii=False))
+    if cmd in ('new', 'build', 'copy', 'write', 'layout', 'box', 'py') and not guide_seen(mark=True):
+        # Said once, by the first command that builds, to an agent that went straight to the commands.
+        print('note  read the guide before building, if you have not (`td.py guide`, or GUIDE.md): how to leave '
+              'a network a person can work with, when to use operators or code, how TD behaves')
     return 0
 
 

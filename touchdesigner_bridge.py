@@ -197,8 +197,8 @@ def _match(value, pattern):
 
 # ---- Commands. They return a string. yield waits one frame. ----
 
-def c_ls(path='/', depth=1, type=None, name=None, limit=80):
-    """List children. relative path, type, [child count], [B=bypass X=cooking off]"""
+def c_ls(path='/', depth=1, type=None, name=None, limit=80, pos=False):
+    """List children. relative path, type, [child count], [B=bypass X=cooking off]; pos adds where each sits."""
     o = _o(path)
     lines = []
     for k in o.findChildren(maxDepth=depth):
@@ -211,6 +211,8 @@ def c_ls(path='/', depth=1, type=None, name=None, limit=80):
                 s += ' X'
         if getattr(k, 'bypass', False):
             s += ' B'
+        if pos:
+            s += '  at %s %s' % (getattr(k, 'nodeX', '?'), getattr(k, 'nodeY', '?'))
         lines.append(s)
     return '\n'.join(_clip(lines, limit)) or '(none)'
 
@@ -218,7 +220,11 @@ def c_ls(path='/', depth=1, type=None, name=None, limit=80):
 def _par_lines(o, pattern='*', all=False):
     lines = []
     for p in o.pars(pattern):
-        if not all and p.isDefault:
+        # Custom parameters are the controls someone put there: shown even at the value they were made with.
+        if not all and p.isDefault and not getattr(p, 'isCustom', False):
+            continue
+        # TD makes every TOP with Viewer Smoothness at nearest while calling linear the default.
+        if not all and p.name == 'filtertype' and str(p.val) == 'nearest':
             continue
         mode = str(p.mode).split('.')[-1]
         try:
@@ -294,9 +300,14 @@ def c_err(path='/', limit=40):
     targets = o.findChildren(maxDepth=1) if o.path == '/' else [o]
     # The same message shows up on many OPs, so group by message and print only the count and the first place.
     groups, order = {}, []
-    for label, method in (('E', 'errors'), ('W', 'warnings')):
+    # scriptErrors holds what a parameter expression or a callback raised: TD keeps those apart from errors.
+    for label, method in (('E', 'errors'), ('E', 'scriptErrors'), ('W', 'warnings')):
         for t in targets:
-            for ln in (getattr(t, method)(recurse=True) or '').splitlines():
+            try:
+                found = getattr(t, method)(recurse=True) or ''
+            except Exception:
+                found = ''
+            for ln in found.splitlines():
                 ln = ln.strip()
                 if not ln:
                     continue
@@ -642,8 +653,9 @@ def c_compare(path, target, file=None, max=768, **change):
     o = _need(_o(path), 'TOP')
     t = _o(target)
     swap, new = change.pop('swap', None), change.pop('with', '')
-    if swap is None and not change:
-        raise Refused("name the change: par=value ..., or swap='OLD' with='NEW' for the text of a DAT")
+    flags = dict((n, bool(change.pop(n))) for n in list(change) if n in _FLAGS)
+    if swap is None and not change and not flags:
+        raise Refused("name the change: par=value ..., a flag (bypass=1), or swap='OLD' with='NEW' for the text of a DAT")
     if swap is not None:
         _need(t, 'DAT')
         if isinstance(swap, bool) or isinstance(new, bool):
@@ -653,6 +665,7 @@ def c_compare(path, target, file=None, max=768, **change):
             raise Refused('%s does not contain %r' % (t.path, swap))
     pars = [_par(t, n) for n in change]
     kept = [(q, q.mode, q.val, q.expr) for q in pars]
+    kept_flags = [(n, getattr(t, n)) for n in flags]
     text = t.text if swap is not None else None
 
     def grab():
@@ -662,12 +675,16 @@ def c_compare(path, target, file=None, max=768, **change):
     try:
         if change:
             _set_pars(t, change)
+        for n, v in flags.items():
+            setattr(t, n, v)
         if swap is not None:
             t.text = text.replace(swap, new)
         b = grab()
     finally:
         if text is not None:
             t.text = text
+        for n, v in kept_flags:
+            setattr(t, n, v)
         for q, mode, val, expr in kept:
             if mode == ParMode.EXPRESSION:
                 q.expr = expr
@@ -687,7 +704,7 @@ def c_compare(path, target, file=None, max=768, **change):
     moved = d > 1.0 / 255.0
     out = ['%s %dx%d  A = as it is, B = with %s' % (
         o.path, a.shape[1], a.shape[0],
-        ' '.join(['%s=%s' % kv for kv in change.items()] + (['%r -> %r in %s' % (swap, new, t.path)] if swap is not None else []))),
+        ' '.join(['%s=%s' % kv for kv in change.items()] + ['%s=%d' % kv for kv in flags.items()] + (['%r -> %r in %s' % (swap, new, t.path)] if swap is not None else []))),
         line('A', a), line('B', b)]
     if not moved.any():
         out.append('NO VISIBLE DIFFERENCE: no pixel changes by a step of 8 bits (largest change %s)' % _num(round(float(d.max()), 5)))
@@ -977,8 +994,15 @@ def c_doc(name, grep=None, start=1, limit=40):
     s = re.sub(r'(?i)<(br|/p|/li|/h\d|/tr|/pre|/div|/dd|/dt)[^>]*>', '\n', s)
     s = html.unescape(re.sub(r'<[^>]+>', '', s))
     out = []
+
+    def found(ln):
+        # A regular expression, case ignored ('hue|saturation'); text that is not one is looked for as it is.
+        try:
+            return re.search(str(grep), ln, re.I) is not None
+        except re.error:
+            return str(grep).lower() in ln.lower()
     for n, ln in enumerate((x.strip() for x in s.splitlines() if x.strip()), 1):
-        if n < start or (grep is not None and str(grep).lower() not in ln.lower()):
+        if n < start or (grep is not None and not found(ln)):
             continue
         out.append('%d: %s' % (n, ln[:400]))
     return '\n'.join(_clip(out, limit)) or '(no match)'
@@ -1136,9 +1160,13 @@ def c_flag(path, **flags):
 @_undoable
 def c_new(parent, type, name=None, x=None, y=None, **pars):
     """Create an OP. Write the type like noiseTOP. The remaining name=value are parameters."""
-    o = _create(_o(parent), type, name)
+    p = _o(parent)
+    o = _create(p, type, name)
     if x is not None and y is not None:
         o.nodeX, o.nodeY = int(x), int(y)
+    else:
+        _beside(p, [o])
+    _claim([o])
     s = '%s %s' % (o.path, o.OPType)
     return s + (' ' + _set_pars(o, pars) if pars else '') + _hints([o])
 
@@ -1154,6 +1182,7 @@ _ON_CREATE = {
     'poptoTOP': 'in its default mode it writes P and ignores Attributes Scope: set rgbamode=custom for another attribute',
     'particlePOP': 'the Null POP at the end of the forces wired after it goes in targetpop; after changing parameters press initializepulse and startpulse',
     'moviefileoutTOP': 'td.py record does this for a few seconds without leaving an OP behind',
+    'rampTOP': 'its colours are the rows of the table DAT it makes beside itself (NAME_keys): read it with text, change it with write',
 }
 
 
@@ -1193,7 +1222,15 @@ def _create(p, type, name=None):
 def c_build(parent, spec):
     """Create and wire several OPs. Each spec line is "name type [par=value ...]", "a -> b" or "a -> b[1]"."""
     p = _o(parent)
-    made, links = {}, []
+    made, links, tight, into, wired_at = {}, [], '', [], {}
+    for n, raw in enumerate(spec.splitlines(), 1):
+        m = re.match(r'^\s*(\S+)\s*->\s*([^\s\[#]+)(?:\[(\d+)\])?\s*(#.*)?$', raw)
+        if m:
+            at = (m.group(2), int(m.group(3) or 0))
+            if at in wired_at:
+                raise Refused('line %d: %s[%d] is already wired on line %d, and a second wire there would replace '
+                              'the first. A further input is %s[%d]' % (n, at[0], at[1], wired_at[at], at[0], at[1] + 1))
+            wired_at[at] = n
     x = _max([getattr(c, 'nodeX', 0) + getattr(c, 'nodeWidth', 130) for c in p.children] or [0]) + 70
     for n, raw in enumerate(spec.splitlines(), 1):
         ln, _, note = raw.partition('#')
@@ -1228,21 +1265,46 @@ def c_build(parent, spec):
         dst = made.get(b) or _o(p.path.rstrip('/') + '/' + b)
         if index >= len(dst.inputConnectors):
             raise Refused('line %d: %s has %d inputs' % (n, dst.path, len(dst.inputConnectors)))
+        if a in made and b not in made:
+            # A new OP takes over an input that was wired: it is being put into that wire.
+            con = dst.inputConnectors[index]
+            try:
+                was = con.connections[0].owner
+            except Exception:
+                was = getattr(con, 'source', None)
+            if was is not None and was.name not in made:
+                into.append((was, dst))
         dst.inputConnectors[index].connect(src.outputConnectors[0])
-    # When the COMP held nothing else, arrange the whole network along the wiring.
+    # When the COMP held nothing else, arrange the whole network along the wiring. Otherwise arrange only
+    # what was made and set it beside what it is wired to; nothing that was already there moves.
     if made and len([c for c in p.children if getattr(c, 'dock', None) is None]) == len(made):
         _layout(made.values())
-    return 'made %d: %s; wired %d' % (len(made), ' '.join(o.name for o in made.values()), len(links)) + _hints(made.values())
+    elif made:
+        tight = _beside(p, made.values(), into) + _backward(made.values())
+    _claim(list(made.values()))
+    return 'made %d: %s; wired %d' % (len(made), ' '.join(o.name for o in made.values()), len(links)) + _hints(made.values()) + tight
+
+
+_GAP = 40  # the space left between neighbouring nodes, along the wiring and between rows
 
 
 def _layout(ops, x0=0, y0=0):
-    """Place OPs left to right along the wiring, from (x0, y0). Each OP sits in the column just before the
-    one it feeds, so a short side chain stays beside what it joins instead of piling up at the far left.
-    Unwired OPs go in columns to the right, no taller than the wired part. DATs docked to an OP are tucked
-    under it. Returns the width and height used."""
+    """Place OPs left to right along the wiring, from (x0, y0). A side chain sits in the columns just before
+    the OP it joins instead of piling up at the far left, and the branches of a fan-out start in one column.
+    A chain runs along one row: an OP shares the row of what its first input feeds into, and each further
+    input comes in from a row below, under everything that leads into the inputs before it. Chains keep the
+    top-to-bottom order they had. Unwired OPs go in columns to the right, no taller than the wired part.
+    DATs docked to an OP are tucked under it. Returns the width and height used."""
     ops = list(ops)
     inside = set(o.path for o in ops)
+    order = dict((o.path, n) for n, o in enumerate(ops))
     depth = {}
+
+    def ins(o):
+        return [i for i in o.inputs if i is not None and i.path in inside]
+
+    def outs(o):
+        return [x for x in o.outputs if x.path in inside]
 
     def walk(o, seen):
         if o.path in depth:
@@ -1250,45 +1312,284 @@ def _layout(ops, x0=0, y0=0):
         if o.path in seen:
             return -1  # a feedback loop: do not follow it
         seen = seen | set([o.path])
-        ins = [i for i in o.inputs if i is not None and i.path in inside]
-        depth[o.path] = d = 1 + _max([walk(i, seen) for i in ins] or [-1])
+        depth[o.path] = d = 1 + _max([walk(i, seen) for i in ins(o)] or [-1])
         return d
 
-    for o in ops:
+    # Start from the ends of the network, so that a loop is cut at the wire that leads back to its start.
+    for o in sorted(ops, key=lambda o: (len(outs(o)) > 0, order[o.path])):
         walk(o, set())
-    wired = [o for o in ops if [i for i in o.inputs if i is not None and i.path in inside]
-             or [x for x in o.outputs if x.path in inside]]
+    wired = [o for o in ops if ins(o) or outs(o)]
+    # Move an OP up to the column before what it feeds, unless something that feeds it also feeds others:
+    # then it stays in the column after its source, so that the branches of a fan-out line up.
     for o in sorted(wired, key=lambda o: -depth[o.path]):
-        outs = [depth[x.path] for x in o.outputs if x.path in inside and depth[x.path] > depth[o.path]]
-        if outs:
-            depth[o.path] = min(outs) - 1
+        later = [depth[x.path] for x in outs(o) if depth[x.path] > depth[o.path]]
+        if later and not [i for i in ins(o) if len(outs(i)) > 1]:
+            depth[o.path] = min(later) - 1
     loose = [o for o in ops if o not in wired]
-    # Cells are as large as the largest node (with its viewer open and its docked DATs), so nothing overlaps.
-    docks = _max([len(getattr(o, 'docked', []) or []) for o in ops] or [0])
-    cw = _max([220] + [int(getattr(o, 'nodeWidth', 130)) + 90 for o in ops] + [docks * 150 + 60])
-    ch = _max([230] + [int(getattr(o, 'nodeHeight', 90)) + 120 + (110 if docks else 0) for o in ops])
-    row, bottom = {}, 0
-    for d in sorted(set(depth[o.path] for o in wired)):
-        col = [o for o in wired if depth[o.path] == d]
+    row, cells = {}, {}
 
-        def key(o):
-            ys = [row[i.path] for i in o.inputs if i is not None and i.path in row]
-            return (sum(ys) / float(len(ys)) if ys else 0, o.name)
-        for n, o in enumerate(sorted(col, key=key)):
-            row[o.path] = n
-            o.nodeX, o.nodeY = x0 + d * cw, y0 - n * ch
-            bottom = _max(bottom, n)
-    # Unwired OPs go to the right in columns, so the network grows sideways and not downward.
-    wide = (_max([depth[o.path] for o in wired] + [0]) + 1) if wired else 0
-    tall = _max(bottom + 1 if wired else 0, 3)
-    for n, o in enumerate(sorted(loose, key=lambda o: (o.family, o.name))):
-        o.nodeX, o.nodeY = x0 + (wide + n // tall) * cw, y0 - (n % tall) * ch
-    loose_cols = (len(loose) + tall - 1) // tall
+    def reach(o):
+        """The leftmost column that o and what leads into it will take."""
+        lo, todo, seen = depth[o.path], [o], set([o.path])
+        while todo:
+            n = todo.pop()
+            lo = min(lo, depth[n.path])
+            for i in ins(n):
+                if i.path not in row and i.path not in seen and depth[i.path] < depth[n.path]:
+                    seen.add(i.path)
+                    todo.append(i)
+        return lo
+
+    def clear(r, lo, hi):
+        # Free, with an empty cell on either side: an OP right next to an unrelated one reads as wired to it.
+        return not [c for c in cells.get(r, ()) if lo - 1 <= c <= hi + 1]
+
+    def below(r, lo, hi):
+        r += 1
+        while not clear(r, lo, hi):
+            r += 1
+        return r
+
+    def place(o, r):
+        row[o.path] = r
+        cells.setdefault(r, set()).add(depth[o.path])
+        # Only the OP on the first input carries the row on. When that one is not among the OPs being arranged
+        # (it was already there), the others all come in from below.
+        along = ([i for i in o.inputs if i is not None] or [None])[0] in ins(o)
+        for i in ins(o):
+            if i.path in row or depth[i.path] >= depth[o.path]:
+                continue
+            # An OP that also feeds something further along this row, past the OP it is reached from, would
+            # have that wire hidden behind the OPs in between: it goes below, like a further input.
+            hidden = [x for x in outs(i) if x is not o and row.get(x.path) == r
+                      and depth[x.path] - depth[i.path] > 1]
+            place(i, r if along and not hidden else below(r, reach(i), depth[i.path]))
+            along = False
+
+    ends = [o for o in wired if not [x for x in outs(o) if depth[x.path] > depth[o.path]]]
+    for o in sorted(ends, key=lambda o: (-o.nodeY, order[o.path])) + wired:
+        if o.path not in row:
+            place(o, _max(cells) + 1 if cells else 0)
+    cell = dict((o.path, (depth[o.path], row[o.path])) for o in wired)
+    # An unwired OP that a wired one names in a parameter (an LFO behind an expression, the table of a Ramp)
+    # goes under that OP. The rest go to the right in columns, past an empty one, so the network grows
+    # sideways and not downward.
+    loose.sort(key=lambda o: (o.family, o.name))
+    named = {}
+    if loose and wired:
+        word = re.compile(r'(?<![\w/])(%s)(?!\w)' % '|'.join(re.escape(o.name) for o in loose))
+        for o in wired:
+            try:
+                said = ' '.join('%s %s' % (p.expr or '', p.val if isinstance(p.val, str) else '')
+                                for p in o.pars() if not p.isDefault)
+            except Exception:
+                continue
+            for name in word.findall(said):
+                named.setdefault(name, o)
+    for o in [o for o in loose if o.name in named]:
+        # The nearest free cell under it. A neighbour is no concern here: TD draws the reference as an arrow.
+        c, r = depth[named[o.name].path], row[named[o.name].path] + 1
+        while c in cells.get(r, ()):
+            r += 1
+        cells.setdefault(r, set()).add(c)
+        cell[o.path] = (c, r)
+    rest = [o for o in loose if o.path not in cell]
+    wide = (_max([depth[o.path] for o in wired] + [0]) + 2) if wired else 0
+    tall = _max(_max(cells) + 1 if cells else 0, 3)
+    for n, o in enumerate(rest):
+        cell[o.path] = (wide + n // tall, n % tall)
+    # A column is as wide, and a row as tall, as its largest node with whatever is docked under it needs.
+    cw, ch = {}, {}
     for o in ops:
+        c, r = cell[o.path]
+        docks = len(getattr(o, 'docked', []) or [])
+        cw[c] = _max(cw.get(c, 130 + _GAP), int(getattr(o, 'nodeWidth', 130)) + _GAP, docks * 150 - 20 + _GAP)
+        ch[r] = _max(ch.get(r, 90 + _GAP), int(getattr(o, 'nodeHeight', 90)) + _GAP + (110 if docks else 0))
+    xs, ys = {0: 0}, {0: 0}
+    for c in range(_max(cw) + 1):
+        xs[c + 1] = xs[c] + cw.get(c, 130 + _GAP)
+    for r in range(_max(ch) + 1):
+        ys[r + 1] = ys[r] + ch.get(r, 90 + _GAP)
+    for o in ops:
+        c, r = cell[o.path]
+        # A taller node is centred on its row, so that the wires along the row stay level.
+        o.nodeX, o.nodeY = x0 + xs[c], y0 - ys[r] - (int(getattr(o, 'nodeHeight', 90)) - 90) // 2
         for k, dk in enumerate(getattr(o, 'docked', []) or []):
             dk.nodeX, dk.nodeY = o.nodeX + k * 150, o.nodeY - 110
-    rows = _max(bottom + 1 if wired else 0, min(len(loose), tall), 1)
-    return _max(wide + loose_cols, 1) * cw, rows * ch
+    return (xs[_max(cw) + 1], ys[_max(ch) + 1]) if ops else (0, 0)
+
+
+# Where this bridge last put each OP it made or arranged, by OP id. An OP that is not in here, or is no longer
+# where it was put, was placed by someone else: by hand, or by a script. Kept across a reload of the bridge.
+if not hasattr(_state, 'placed'):
+    _state.placed = {}
+
+
+def _claim(ops):
+    for o in _extent(ops)[0] if ops else []:
+        _state.placed[o.id] = (o.nodeX, o.nodeY)
+
+
+def _foreign(ops):
+    return [o for o in ops if _state.placed.get(o.id) != (o.nodeX, o.nodeY)]
+
+
+def _strange(ops):
+    """OPs this bridge never placed: someone else made them, by hand or by a script."""
+    return [o for o in ops if o.id not in _state.placed]
+
+
+def _extent(ops):
+    """The OPs with whatever is docked to them, and the rectangle they cover (left, bottom, right, top)."""
+    ops = list(ops)
+    for o in list(ops):
+        ops.extend(getattr(o, 'docked', []) or [])
+    return ops, (min(o.nodeX for o in ops), min(o.nodeY for o in ops),
+                 _max(o.nodeX + getattr(o, 'nodeWidth', 130) for o in ops),
+                 _max(o.nodeY + getattr(o, 'nodeHeight', 90) for o in ops))
+
+
+def _settle(p, ops, left, top):
+    """Move OPs as one group, keeping their arrangement, so that the group's left edge is at `left` and its
+    top edge at `top`, or at the nearest height where it covers no other OP of the COMP (lower is tried
+    before higher). Returns False, moving nothing, when no such height is near."""
+    mine, (x0, y0, x1, y1) = _extent(ops)
+    paths = set(o.path for o in mine)
+    others = [(c.nodeX - 20, c.nodeY - 20, c.nodeX + getattr(c, 'nodeWidth', 130) + 20,
+               c.nodeY + getattr(c, 'nodeHeight', 90) + 20)
+              for c in p.children if c.path not in paths and c.OPType != 'annotateCOMP']
+    dx, step = left - x0, 90 + _GAP      # one row at a time
+    for k in range(60):
+        for dy in ((top - y1 - k * step, top - y1 + k * step) if k else (top - y1,)):
+            # Node by node, not the rectangle around the group: an L-shaped group fits around a corner.
+            if not [1 for o in mine for bx0, by0, bx1, by1 in others
+                    if o.nodeX + dx < bx1 and bx0 < o.nodeX + getattr(o, 'nodeWidth', 130) + dx
+                    and o.nodeY + dy < by1 and by0 < o.nodeY + getattr(o, 'nodeHeight', 90) + dy]:
+                # Positions are worked out first and docked OPs set after their owners, so the result is the
+                # same whether or not moving an owner carries its docked OPs along.
+                for o, x, y in [(o, o.nodeX + dx, o.nodeY + dy) for o in mine]:
+                    o.nodeX, o.nodeY = x, y
+                return True
+    return False
+
+
+def _backward(ops):
+    """Said by build when what it added had to go where a wire to or from an OP that was already there runs
+    right to left: there was no room between the two. Nothing is moved for it; the owner may want to."""
+    ops = list(ops)
+    mine = set(o.path for o in ops)
+    out = []
+    for o in ops:
+        for a, b in [(i, o) for i in o.inputs if i is not None and i.path not in mine] + \
+                    [(o, x) for x in o.outputs if x.path not in mine]:
+            if a.nodeX + getattr(a, 'nodeWidth', 130) > b.nodeX:
+                there = b if b.path not in mine else a
+                out.append('note  %s -> %s runs right to left: there was no room beside %s. Nothing that was there '
+                           'was moved; if its owner agrees, `move` it to make room' % (a.name, b.name, there.name))
+    return ('\n' + '\n'.join(out[:3])) if out else ''
+
+
+def _inline(p, ops, before, after):
+    """Set OPs that were wired into an existing wire, before -> after, on the row of that wire. When they do
+    not fit between the two, `after` and everything to its right is moved further right by what is missing:
+    the arrangement keeps its shape and no wire has to turn back. Returns what to say about it, or None when
+    the OPs do not form a line from one to the other."""
+    ops = list(ops)
+    first = [o for o in ops if before in o.inputs]
+    last = [o for o in ops if after in o.outputs]
+    if not first or not last or before.nodeX >= after.nodeX:
+        return None
+    main = [o for o in ops if [i for i in o.inputs if i is not None] or o.outputs]
+    side = [o for o in ops if o not in main]
+    _layout(main)
+    a, z = first[0], last[0]
+    if a.nodeY + getattr(a, 'nodeHeight', 90) // 2 != z.nodeY + getattr(z, 'nodeHeight', 90) // 2:
+        return None
+    grouped, (x0, y0, x1, y1) = _extent(ops)
+    inside = set(o.path for o in grouped)
+    left = before.nodeX + getattr(before, 'nodeWidth', 130) + _GAP - (a.nodeX - x0)
+    top = before.nodeY + getattr(before, 'nodeHeight', 90) + (_extent(main)[1][3] - a.nodeY - getattr(a, 'nodeHeight', 90))
+    push = left + (z.nodeX - x0) + getattr(z, 'nodeWidth', 130) + _GAP - after.nodeX
+    said = ''
+    if push > 0:
+        cut, moves, count = after.nodeX, [], 0
+        for c in p.children:
+            if c.path in inside or getattr(c, 'dock', None) is not None:
+                continue
+            if c.OPType == 'annotateCOMP':
+                if c.nodeX >= cut:
+                    moves.append((c, 'nodeX', c.nodeX + push))
+                elif c.nodeX + c.nodeWidth > cut:
+                    moves.append((c, 'nodeWidth', c.nodeWidth + push))
+            elif c.nodeX >= cut:
+                count += 1
+                moves.append((c, 'nodeX', c.nodeX + push))
+                moves.extend((d, 'nodeX', d.nodeX + push) for d in getattr(c, 'docked', []) or [])
+        # What this bridge had placed is still where it put it, after this move as before.
+        own = [c for c, name, v in moves if name == 'nodeX' and not _foreign([c])]
+        for c, name, v in moves:
+            setattr(c, name, v)
+        for c in own:
+            _state.placed[c.id] = (c.nodeX, c.nodeY)
+        said = '\nnote  made room on the wire %s -> %s: moved %s%s right by %d' % (
+            before.name, after.name, after.name,
+            ' and the %d OPs to its right, as one piece,' % (count - 1) if count > 1 else '', push)
+    _settle(p, main, left, top)
+    if side:
+        _layout(side)
+        _settle(p, side, _extent(main)[1][0], _extent(main)[1][1] - _GAP)
+    return said
+
+
+def _beside(p, ops, into=()):
+    """Place OPs just added to a COMP that already holds others. They are arranged along their own wiring,
+    then set as a group to the right of the existing OP that feeds them, in line with it; failing that, to
+    the left of the existing OP they feed; failing that, to the right of everything. Where the spot is
+    taken the group goes to the nearest free height. Nothing that was already there moves, except to make
+    room for OPs wired into an existing wire (into: pairs of the OPs that wire ran between). Returns what
+    to say about it."""
+    ops = list(ops)
+    mine, _ = _extent(ops)
+    inside = set(o.path for o in mine)
+    others = [c for c in p.children if c.path not in inside and c.OPType != 'annotateCOMP']
+    if not others:
+        return ''
+    for before, after in into:
+        said = _inline(p, ops, before, after)
+        if said is not None:
+            return said
+    _layout(ops)
+    _, (x0, y0, x1, y1) = _extent(ops)
+    feeds = [(i, o) for o in ops for i in o.inputs if i is not None and i.path not in inside]
+    takes = [(t, o) for o in ops for t in o.outputs if t.path not in inside]
+    gap = _GAP
+    if feeds:
+        # Beside the source furthest along the network, so the wire to it is the short one.
+        there, o = sorted(feeds, key=lambda f: -f[0].nodeX)[0]
+        left = there.nodeX + getattr(there, 'nodeWidth', 130) + gap - (o.nodeX - x0)
+    elif takes:
+        there, o = sorted(takes, key=lambda t: t[0].nodeX)[0]
+        left = there.nodeX - gap - (o.nodeX + getattr(o, 'nodeWidth', 130) - x0)
+    if feeds or takes:
+        top = there.nodeY + getattr(there, 'nodeHeight', 90) + (y1 - o.nodeY - getattr(o, 'nodeHeight', 90))
+        if _settle(p, ops, left, top):
+            return ''
+    _settle(p, ops, _max(c.nodeX + getattr(c, 'nodeWidth', 130) for c in others) + gap,
+            _max(c.nodeY + getattr(c, 'nodeHeight', 90) for c in others))
+    return ''
+
+
+def c_show(path):
+    """Show a COMP in the network editor, framed so that all of it is in view. Used by td.py shot."""
+    c = _o(path)
+    if not c.isCOMP:
+        raise Refused('%s is not a COMP' % c.path)
+    editors = [p for p in ui.panes if p.type == PaneType.NETWORKEDITOR]
+    if not editors:
+        raise Refused('no network editor is open in TD')
+    editors[0].owner = c
+    editors[0].home()
+    return c.path
 
 
 @_undoable
@@ -1367,8 +1668,12 @@ def _box_viewer(box):
         pass
 
 
+def _kids(p):
+    return [c for c in p.children if getattr(c, 'dock', None) is None and c.OPType != 'annotateCOMP']
+
+
 def _tidy(p):
-    kids = [c for c in p.children if getattr(c, 'dock', None) is None and c.OPType != 'annotateCOMP']
+    kids = _kids(p)
     boxes = sorted([b for b in p.children if b.OPType == 'annotateCOMP'], key=lambda b: -(b.nodeY + b.nodeHeight))
     taken, groups = set(), []
     for b in boxes:
@@ -1376,27 +1681,44 @@ def _tidy(p):
                 and b.nodeX <= o.nodeX + getattr(o, 'nodeWidth', 130) / 2 <= b.nodeX + b.nodeWidth
                 and b.nodeY <= o.nodeY + getattr(o, 'nodeHeight', 90) / 2 <= b.nodeY + b.nodeHeight]
         taken.update(o.path for o in mine)
-        groups.append((b, mine))
-    boxes_in_order = sorted(groups, key=lambda g: (g[0].nodeX, -g[0].nodeY))
-    x = 0
-    for b, mine in boxes_in_order:
-        if not mine:
-            continue
-        _layout(mine, x, 0)
+        if mine:
+            groups.append((b, mine))
+    # Boxes keep the direction they were set out in: side by side when none shares a column with another,
+    # otherwise stacked from the top, as `box` makes them. Beside a single box the rest goes to its right,
+    # where the wires out of it lead.
+    before = _extent(kids)[1] if kids else None
+    spans = sorted((b.nodeX, b.nodeX + b.nodeWidth) for b, _ in groups)
+    across = all(spans[n][1] <= spans[n + 1][0] for n in range(len(spans) - 1))
+    x = y = 0
+    for b, mine in sorted(groups, key=lambda g: g[0].nodeX if across else -(g[0].nodeY + g[0].nodeHeight)):
+        _layout(mine, x, y)
         _fit_box(b, mine)
         _box_viewer(b)
-        x = b.nodeX + b.nodeWidth + 150
+        if across:
+            x = b.nodeX + b.nodeWidth + 150
+        else:
+            y = b.nodeY - 260
     rest = [o for o in kids if o.path not in taken]
     if rest:
-        _layout(rest, x, 0)
+        _layout(rest, x, y)
+    if kids:
+        # Keep the top left corner where it was, so the network is still where its owner looks for it.
+        all_, after = _extent(kids)
+        dx, dy = before[0] - after[0], before[3] - after[3]
+        for o, ox, oy in [(o, o.nodeX + dx, o.nodeY + dy) for o in all_ + [g[0] for g in groups]]:
+            o.nodeX, o.nodeY = ox, oy
+    _claim(kids)
     return len(kids)
 
 
 @_undoable
-def c_layout(path, deep=False):
+def c_layout(path, deep=False, yes=False):
     """Arrange the OPs inside a COMP along the wiring, so that none overlap. OPs inside an annotation box
-    stay in it: each box is arranged on its own, resized to fit and set to the right of the one before;
-    whatever is in no box goes after them. deep also arranges every COMP below this one."""
+    stay in it: each box is arranged on its own and resized to fit, the boxes keep their order, and whatever
+    is in no box goes after them. Chains keep their top-to-bottom order and the network keeps its top left
+    corner. deep also arranges every COMP below this one.
+    A COMP holding OPs that this bridge did not place is someone's arrangement: it is left alone unless yes
+    is given. OPs it did place and someone moved since are arranged again, and named in the reply."""
     p = _o(path)
     if not p.isCOMP:
         raise Refused('%s is not a COMP' % p.path)
@@ -1404,8 +1726,22 @@ def c_layout(path, deep=False):
     if deep:
         todo += [c for c in p.findChildren() if c.isCOMP and c.OPType != 'annotateCOMP'
                  and not any(a.OPType == 'annotateCOMP' for a in _ancestors(c, p)) and c.children]
+    if not yes:
+        theirs = [(c, _strange(_kids(c)), len(_kids(c))) for c in todo]
+        theirs = [t for t in theirs if t[1]]
+        if theirs:
+            raise Refused('\n'.join(
+                ['%s: %d of %d OPs were not placed by td.py (%s%s)' % (
+                    c.path, len(f), n, ' '.join(o.name for o in f[:5]), ' ...' if len(f) > 5 else '')
+                 for c, f, n in theirs[:8]] +
+                ['layout moves every OP in the COMP, so nothing was arranged. Add --yes if you were asked to '
+                 'rearrange this network (one undo step). build and new already put what they add beside '
+                 'what it is wired to']))
+    moved = [o for c in todo for o in _foreign(_kids(c)) if o.id in _state.placed]
     n = sum(_tidy(c) for c in todo)
-    return 'arranged %d OPs in %s%s' % (n, p.path, ' and %d COMPs below it' % (len(todo) - 1) if deep else '')
+    return 'arranged %d OPs in %s%s' % (n, p.path, ' and %d COMPs below it' % (len(todo) - 1) if deep else '') + (
+        '\nnote  %d had been moved by hand since td.py placed them and were arranged again: %s%s. undo puts them back' % (
+            len(moved), ' '.join(o.name for o in moved[:8]), ' ...' if len(moved) > 8 else '') if moved and not yes else '')
 
 
 def _overlaps(p):
@@ -1421,18 +1757,23 @@ def _overlaps(p):
 
 
 def c_overlaps(path='/', deep=True):
-    """OPs that lie on top of each other in the network editor, in this COMP and (deep) every COMP below."""
+    """OPs that lie on top of each other in the network editor, and wires that run right to left, in this
+    COMP and (deep) every COMP below."""
     p = _o(path)
     todo = [p] + ([c for c in p.findChildren() if c.isCOMP and c.OPType != 'annotateCOMP' and c.children] if deep else [])
-    lines, total = [], 0
+    lines, total, back = [], 0, []
     for c in todo:
         hits = _overlaps(c)
         if hits:
             total += len(hits)
             lines.append('%s  %d: %s%s' % (c.path, len(hits), ', '.join('%s/%s' % h for h in hits[:6]), ' ...' if len(hits) > 6 else ''))
-    if not lines:
-        return 'no overlapping OPs in %d COMPs' % len(todo)
-    return '%d overlapping pairs. `td.py layout COMP` arranges one COMP\n%s' % (total, '\n'.join(lines))
+        turned = ['%s -> %s' % (i.name, o.name) for o in c.children for i in o.inputs
+                  if i is not None and i.nodeX + getattr(i, 'nodeWidth', 130) > o.nodeX]
+        if turned:
+            back.append('%s  %d wires run right to left: %s%s' % (c.path, len(turned), ', '.join(turned[:6]), ' ...' if len(turned) > 6 else ''))
+    head = ('%d overlapping pairs. `td.py layout COMP` arranges one COMP' % total) if lines else \
+        'no overlapping OPs in %d COMPs' % len(todo)
+    return '\n'.join([head] + lines + back)
 
 
 def _up(o):
@@ -1467,7 +1808,10 @@ def c_rename(path, name):
 @_undoable
 def c_copy(src, parent, name=None):
     """Copy an OP into another COMP."""
-    o = _o(parent).copy(_o(src), name=name) if name else _o(parent).copy(_o(src))
+    p = _o(parent)
+    o = p.copy(_o(src), name=name) if name else p.copy(_o(src))
+    _beside(p, [o])
+    _claim([o])
     return '%s %s' % (o.path, o.OPType)
 
 
@@ -1546,7 +1890,8 @@ def c_write(path, text):
 @_undoable
 def c_box(comp, title, *names, **kw):
     """Put a titled box around some OPs of a COMP, after arranging them along their wiring.
-    Boxes stack downward in the order they are made, one per stage of the network. body='text' adds a note."""
+    Boxes stack downward in the order they are made, one per stage of the network. body='text' adds a note.
+    OPs that someone else placed are not moved: the box is drawn around them where they are."""
     c = _o(comp)
     if not c.isCOMP:
         raise Refused('%s is not a COMP' % c.path)
@@ -1556,8 +1901,12 @@ def c_box(comp, title, *names, **kw):
     for n in names:
         ops.extend(_os(c.path.rstrip('/') + '/' + n))
     boxes = [b for b in c.children if b.OPType == 'annotateCOMP']
-    top = min([b.nodeY for b in boxes] or [200]) - 200
-    w, hgt = _layout(ops, 0, top - 60)
+    if not _foreign(ops):
+        top = min([b.nodeY for b in boxes] or [200]) - 200
+        _layout(ops, 0, top - 60)
+        # Below the boxes there may be OPs that are in no box: go to the nearest height that is clear of them.
+        _settle(c, ops, 0, _extent(ops)[1][3])
+        _claim(ops)
     box = c.create(annotateCOMP)
     _fit_box(box, ops)
     _box_viewer(box)
@@ -1578,6 +1927,7 @@ def c_move(path, x, y):
     """Move an OP in the network."""
     o = _o(path)
     o.nodeX, o.nodeY = int(x), int(y)
+    _claim([o])
     return '%s at %d %d' % (o.path, o.nodeX, o.nodeY)
 
 

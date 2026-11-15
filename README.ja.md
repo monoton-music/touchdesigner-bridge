@@ -15,10 +15,16 @@
 
 ### エージェントに任せる場合
 
-このリポジトリの URL をエージェントに渡して、作業を依頼します。エージェントは、リポジトリの取得、TD の起動と接続、コマンドの確認（`td.py help`、`td.py guide`）を自分で行います。
+このリポジトリの URL をエージェントに渡して、作業を依頼します。エージェントは、リポジトリの取得、TD の起動と接続、コマンドの確認（`td.py help`、`td.py guide`）を自分で行います。エージェントに事前に読み込まれるものはありません。`td.py guide` を実行していない場合は、最初の構築系コマンドの返答で一度だけ guide を案内します。
 
 ```
 https://github.com/monoton-music/touchdesigner-bridge を使って、show.toe で fps が落ちている原因を調べて
+```
+
+あるプロジェクトで毎回使わせたい場合は、そのプロジェクトの `AGENTS.md` か `CLAUDE.md` に次の 1 行を書きます。セッションの開始時に読み込まれるのはこれらのファイルで、このリポジトリの中のファイルは読み込まれません。
+
+```
+TouchDesigner の作業には touchdesigner-bridge（path/to/touchdesigner-bridge/td.py）を使う。最初に `python3 td.py guide` を実行し、その内容に従う。
 ```
 
 ### 自分で実行する場合
@@ -108,22 +114,24 @@ out nullTOP
 n -> lv
 lv -> out
 END
-python3 td.py layout /project1               # ノードを配線に沿って整列します
+python3 td.py layout /project1               # ノードを配線に沿って整列します（他の人が並べたネットワークには --yes が必要です）
+python3 td.py shot /project1                 # /project1 をネットワークエディタに表示して、TD のウィンドウだけを画像に保存します（現在は macOS のみ）
+python3 td.py ls /project1 --pos             # 子の一覧に、それぞれの位置を付けて表示します
 python3 td.py note /project1/lv1 '黒レベルを上げる'            # ノードに表示されるコメントを付けます
-python3 td.py box /project1 'Source' n lv                    # 指定した OP を整列し、タイトル付きの枠で囲みます
-python3 td.py look /project1/out                               # 画像を数値で確認します。階調、黒つぶれと白とびの面積、色相を表示します
+python3 td.py box /project1 'Source' n lv                    # 指定した OP を整列し、タイトル付きの枠で囲みます（任意）
+python3 td.py look /project1/null_final                               # 画像を数値で確認します。階調、黒つぶれと白とびの面積、色相を表示します
 python3 td.py overlaps /project1                                # ネットワークエディタ上で重なっている OP を一覧表示します
 python3 td.py trace /project1/cam ty rz frames=300              # パラメータを時系列で記録します。範囲、速度、急な変化、反転の回数を表示します
-python3 td.py motion /project1/out                             # 動きを確認します。1 ステップの変化量、流れの速度と方向、連続フレームの一覧画像を出力します
-python3 td.py motion /project1/out --crop 720,360,480,360      # 指定した領域だけを等倍で確認します
-python3 td.py motion /project1/out --follow '(op("/project1/pos")["x"].eval(), op("/project1/pos")["y"].eval())'   # 動く対象を一覧画像の中央に保ちます
+python3 td.py motion /project1/null_final                             # 動きを確認します。1 ステップの変化量、流れの速度と方向、連続フレームの一覧画像を出力します
+python3 td.py motion /project1/null_final --crop 720,360,480,360      # 指定した領域だけを等倍で確認します
+python3 td.py motion /project1/null_final --follow '(op("/project1/pos")["x"].eval(), op("/project1/pos")["y"].eval())'   # 動く対象を一覧画像の中央に保ちます
 python3 td.py knob /project1 Gain=0.5@lv1.opacity              # COMP にカスタムパラメータを追加し、lv1.opacity に連動させます
 python3 td.py rm /project1/lv1 --yes         # --yes を付けない場合は、削除される数を表示するだけで削除しません
 python3 td.py rm '/project1/tmp*' --yes      # 一致するものを全て削除します。--yes を付けない場合は一覧を表示します
 python3 td.py undo
 ```
 
-`new` と `build` で作成した OP は、ノードのビューアーが有効になるので、ネットワークを表示すれば各ノードの出力を確認できます。空の COMP に対して `build` を実行した場合は、ノードを配線に沿って整列します。ビューアーは cook 時間を消費するので、負荷が高くなった場合は `python3 td.py flag '/project1/*' viewer=0` で無効にします。
+`new` と `build` で作成した OP は、ノードのビューアーが有効になるので、ネットワークを表示すれば各ノードの出力を確認できます。空の COMP に対して `build` を実行した場合は、ノードを配線に沿って整列します。すでに OP がある COMP では、`build`、`new`、`copy` は追加した OP を配線先の OP の隣の空いている場所に置きます。既存の配線の途中に挿し込んだ OP は、その配線の上に置きます。両端の間に場所がない場合は、配線が右から左へ戻らないように、後ろ側の OP とその右にある OP をまとめて右へずらし、何を動かしたかを返答で伝えます。それ以外の OP は動かしません。`layout` は COMP 全体を並べ直すので、ブリッジが置いていない OP がある COMP では実行を断ります。持ち主から整理を頼まれた場合は `--yes` を付けます。ブリッジが置いたあとに手で動かされた OP は並べ直し、その名前を返答で伝えます。その場合も、系統の上下の順序、枠とその中の OP、ネットワークの位置は保たれ、undo 1 回で元に戻せます。ビューアーは cook 時間を消費するので、負荷が高くなった場合は `python3 td.py flag '/project1/*' viewer=0` で無効にします。
 
 `py` 以外のコマンドには `--when 'EXPR'` を指定できます。
 

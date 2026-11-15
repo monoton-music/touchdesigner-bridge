@@ -15,10 +15,16 @@ A command-line tool for inspecting and editing a running TouchDesigner from an o
 
 ### Leaving it to an agent
 
-Give the agent the URL of this repository and ask for the work. The agent fetches the repository, launches TD and connects, and reads the commands (`td.py help`, `td.py guide`) by itself.
+Give the agent the URL of this repository and ask for the work. The agent fetches the repository, launches TD and connects, and reads the commands (`td.py help`, `td.py guide`) by itself. Nothing is loaded into the agent beforehand. The first command that builds points at the guide once, unless `td.py guide` has been run.
 
 ```
 Use https://github.com/monoton-music/touchdesigner-bridge to find out why show.toe is dropping frames
+```
+
+To have it used in every session of a project, put one line in that project's `AGENTS.md` or `CLAUDE.md`. Those files are loaded at the start of a session; this repository's own files are not.
+
+```
+For TouchDesigner work use touchdesigner-bridge (path/to/touchdesigner-bridge/td.py). Before the first use, run `python3 td.py guide` and follow it.
 ```
 
 ### Running it yourself
@@ -108,22 +114,24 @@ out nullTOP
 n -> lv
 lv -> out
 END
-python3 td.py layout /project1               # arrange the nodes along the wiring
-python3 td.py look /project1/out                               # the picture as numbers: tones, black and clipped area, hues
+python3 td.py layout /project1               # arrange the nodes along the wiring (--yes for a network someone else arranged)
+python3 td.py shot /project1                 # a picture of the TD window with /project1 in the network editor (macOS for now)
+python3 td.py ls /project1 --pos             # the children with where each sits
+python3 td.py look /project1/null_final                               # the picture as numbers: tones, black and clipped area, hues
 python3 td.py overlaps /project1                                # OPs lying on top of each other in the network editor
 python3 td.py trace /project1/cam ty rz frames=300              # follow parameters over time: range, speed, jolts, reversals
-python3 td.py motion /project1/out                             # how it moves: change per step, flow speed and direction, a contact sheet
-python3 td.py motion /project1/out --crop 720,360,480,360      # the same for one region at full size
-python3 td.py motion /project1/out --follow '(op("/project1/pos")["x"].eval(), op("/project1/pos")["y"].eval())'   # keeps a moving object centred
+python3 td.py motion /project1/null_final                             # how it moves: change per step, flow speed and direction, a contact sheet
+python3 td.py motion /project1/null_final --crop 720,360,480,360      # the same for one region at full size
+python3 td.py motion /project1/null_final --follow '(op("/project1/pos")["x"].eval(), op("/project1/pos")["y"].eval())'   # keeps a moving object centred
 python3 td.py note /project1/lv1 'lifts the blacks'            # comment shown on the node
-python3 td.py box /project1 'Source' n lv                    # arrange these and draw a titled box around them
+python3 td.py box /project1 'Source' n lv                    # arrange these and draw a titled box around them (optional)
 python3 td.py knob /project1 Gain=0.5@lv1.opacity              # custom parameter on the COMP that drives lv1.opacity
 python3 td.py rm /project1/lv1 --yes         # without --yes, only reports how many would be deleted
 python3 td.py rm '/project1/tmp*' --yes      # every match; without --yes, lists them
 python3 td.py undo
 ```
 
-OPs made by `new` and `build` have their node viewer on, so the network shows what each node makes. `build` into an empty COMP also arranges the nodes along the wiring. Viewers cost cook time; when a network gets heavy, turn them off with `python3 td.py flag '/project1/*' viewer=0`.
+OPs made by `new` and `build` have their node viewer on, so the network shows what each node makes. `build` into an empty COMP also arranges the nodes along the wiring. In a COMP that already holds others, `build`, `new` and `copy` set what they add beside the OP it is wired to, at the nearest free spot. OPs wired into an existing wire sit on that wire; when there is no room between its two ends, the far end and everything to its right moves over as one piece, so that no wire has to turn back, and the reply says what moved. Nothing else moves. `layout` rearranges a whole COMP, so it refuses when the COMP holds OPs the bridge did not place; `--yes` is for when the owner asked for the network to be tidied. OPs the bridge placed and someone nudged since are arranged again and named in the reply. It keeps the chains in their top-to-bottom order, keeps boxes around their OPs, leaves the network where it was, and is one undo step. Viewers cost cook time; when a network gets heavy, turn them off with `python3 td.py flag '/project1/*' viewer=0`.
 
 Every command except `py` takes `--when 'EXPR'`.
 
