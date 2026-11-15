@@ -518,10 +518,11 @@ def c_look(path):
     coloured = (sat > .25) & (top > .08)
     out = ['%s %dx%d' % (o.path, o.width, o.height) + ('  INVALID VALUES: %d (nan or inf)' % bad if bad else ''),
            'tone   p1 %s  p10 %s  p50 %s  p90 %s  p99 %s   peak %s' % tuple(_num(round(v, 3)) for v in pct + [peak]),
-           'area   black(<0.02) %d%%  dark(<0.1) %d%%  mid(0.1-0.6) %d%%  bright(>0.6) %d%%  clipped(>0.98) %s%%' % (
+           'area   black(<0.02) %d%%  dark(<0.1) %d%%  mid(0.1-0.6) %d%%  bright(>0.6) %d%%  clipped white(>0.98) %s%%  one channel at full %s%%' % (
                round(float((top < .02).mean()) * 100), round(float((top < .1).mean()) * 100),
                round(float(((top >= .1) & (top <= .6)).mean()) * 100), round(float((top > .6).mean()) * 100),
-               _num(round(float((top > .98).mean()) * 100, 1)))]
+               _num(round(float((low > .98).mean()) * 100, 1)),
+               _num(round(float(((top > .98) & (low <= .98)).mean()) * 100, 1)))]
     if coloured.any():
         r, g, b = a[:, :, 0][coloured], a[:, :, 1][coloured], a[:, :, 2][coloured]
         hue = (np.degrees(np.arctan2(np.sqrt(3.0) * (g - b), 2 * r - g - b)) + 360.0) % 360.0
@@ -1111,7 +1112,19 @@ def _undoable(fn):
     return wrapped
 
 
-def _set_pars(o, values):
+def _why(o, e):
+    """The reason TD gives for a failure, as one line: the script error it kept for the OP when there is one."""
+    try:
+        kept = [ln.strip() for ln in (o.scriptErrors() or '').splitlines() if ln.strip()]
+    except Exception:
+        kept = []
+    said = kept[-1] if kept else (str(e).strip().splitlines() or [e.__class__.__name__])[-1]
+    return re.sub(r'\s*\(/[^()]*\)$', '', said)
+
+
+def _set_pars(o, values, check=True):
+    """Set parameters of one OP. With check, each is evaluated at once and a failure puts it back; build
+    turns that off and tries the expressions with _check_pars once everything it makes is there and wired."""
     out = []
     for name, v in values.items():
         p = _par(o, name)
@@ -1120,15 +1133,17 @@ def _set_pars(o, values):
             if isinstance(v, str) and v.startswith('='):
                 p.expr = v[1:]
                 p.mode = ParMode.EXPRESSION
+                out.append('%s=%s  expr: %s' % (name, _num(p.eval()), v[1:]) if check else '%s%s' % (name, v))
             else:
                 p.mode = ParMode.CONSTANT
                 p.val = v
-            out.append('%s=%s' % (name, _num(p.eval())))
+                out.append('%s=%s' % (name, _num(p.eval()) if check else v))
         except Refused:
             raise
         except Exception as e:
             # A value TD will not take, or an expression that fails: put the parameter back and say so,
             # so that the answer is never a half-made change.
+            why = _why(o, e)
             try:
                 if was[0] == ParMode.EXPRESSION:
                     p.expr = was[2]
@@ -1137,9 +1152,17 @@ def _set_pars(o, values):
                 p.mode = was[0]
             except Exception:
                 pass
-            why = (str(e).strip().splitlines() or [e.__class__.__name__])[-1]
             raise Refused('%s.%s was not set to %s: %s. It is as it was' % (o.name, name, v, why))
     return ' '.join(out)
+
+
+def _check_pars(o, values):
+    for name, v in values.items():
+        if isinstance(v, str) and v.startswith('='):
+            try:
+                _par(o, name).eval()
+            except Exception as e:
+                raise Refused('%s.%s: the expression %s fails: %s' % (o.name, name, v[1:], _why(o, e)))
 
 
 @_undoable
@@ -1199,7 +1222,8 @@ _ON_CREATE = {
     'poptoTOP': 'in its default mode it writes P and ignores Attributes Scope: set rgbamode=custom for another attribute',
     'particlePOP': 'the Null POP at the end of the forces wired after it goes in targetpop; after changing parameters press initializepulse and startpulse',
     'moviefileoutTOP': 'td.py record does this for a few seconds without leaving an OP behind',
-    'rampTOP': 'its colours are the rows of the table DAT it makes beside itself (NAME_keys): read it with text, change it with write',
+    'rampTOP': 'its colours are the rows of the table DAT it makes beside itself (NAME_keys): read it with text, change it with write. '
+               'A circular or radial ramp repeats past its edge unless extendleft=hold',
 }
 
 
@@ -1271,52 +1295,77 @@ def c_build(parent, spec):
                               'the first. A further input is %s[%d]' % (n, at[0], at[1], wired_at[at], at[0], at[1] + 1))
             wired_at[at] = n
     x = _max([getattr(c, 'nodeX', 0) + getattr(c, 'nodeWidth', 130) for c in p.children] or [0]) + 70
-    for n, raw in enumerate(spec.splitlines(), 1):
-        ln, _, note = raw.partition('#')
-        ln, note = ln.strip(), note.strip()
-        if not ln:
-            continue
-        m = re.match(r'^(\S+)\s*->\s*([^\s\[]+)(?:\[(\d+)\])?$', ln)
-        if m:
-            links.append((n, m.group(1), m.group(2), int(m.group(3) or 0)))
-            continue
-        parts = ln.split()
-        if len(parts) < 2:
-            raise Refused('line %d: expected "name type [par=value ...]" or "a -> b": %s' % (n, raw))
-        o = _create(p, parts[1], parts[0])
-        o.nodeX, o.nodeY = x, 0
-        if note:
-            # The text after # stays on the node as its comment, for whoever opens the network later.
-            o.comment = note
-        x += getattr(o, 'nodeWidth', 130) + 70
-        vals = {}
-        for kv in parts[2:]:
-            k, _, v = kv.partition('=')
+    rewired = []      # inputs of OPs that were there, and what each was wired from, to put back on a failure
+    try:
+        for n, raw in enumerate(spec.splitlines(), 1):
+            ln, _, note = raw.partition('#')
+            ln, note = ln.strip(), note.strip()
+            if not ln:
+                continue
+            m = re.match(r'^(\S+)\s*->\s*([^\s\[]+)(?:\[(\d+)\])?$', ln)
+            if m:
+                links.append((n, m.group(1), m.group(2), int(m.group(3) or 0)))
+                continue
+            parts = ln.split()
+            if len(parts) < 2:
+                raise Refused('line %d: expected "name type [par=value ...]" or "a -> b": %s' % (n, raw))
+            o = _create(p, parts[1], parts[0])
+            o.nodeX, o.nodeY = x, 0
+            if note:
+                # The text after # stays on the node as its comment, for whoever opens the network later.
+                o.comment = note
+            x += getattr(o, 'nodeWidth', 130) + 70
+            vals = {}
+            for kv in parts[2:]:
+                k, _, v = kv.partition('=')
+                try:
+                    vals[k] = json.loads(v)
+                except ValueError:
+                    vals[k] = v
+            if vals:
+                later.append((o, vals))
+            made[parts[0]] = o
+        # Parameters are set once every OP of the spec exists, so that an expression may name one made further down.
+        for o, vals in later:
+            _set_pars(o, vals, check=False)
+        for n, a, b, index in links:
+            src = made.get(a) or _o(p.path.rstrip('/') + '/' + a)
+            dst = made.get(b) or _o(p.path.rstrip('/') + '/' + b)
+            if index >= len(dst.inputConnectors):
+                raise Refused('line %d: %s has %d inputs' % (n, dst.path, len(dst.inputConnectors)))
+            if b not in made:
+                con = dst.inputConnectors[index]
+                try:
+                    old = con.connections[0]
+                    was = old.owner
+                except Exception:
+                    was = getattr(con, 'source', None)
+                    old = was.outputConnectors[0] if was is not None else None
+                if old is not None:
+                    rewired.append((con, old))
+                # A new OP takes over an input that was wired: it is being put into that wire.
+                if a in made and was is not None and was.name not in made:
+                    into.append((was, dst))
+            dst.inputConnectors[index].connect(src.outputConnectors[0])
+        # Expressions are tried last, with every OP made and wired: one may read a channel that only exists by now.
+        for o, vals in later:
+            _check_pars(o, vals)
+    except Exception as e:
+        # All or nothing: a spec that fails part-way leaves no OPs behind and no wire changed.
+        for con, old in reversed(rewired):
             try:
-                vals[k] = json.loads(v)
-            except ValueError:
-                vals[k] = v
-        if vals:
-            later.append((o, vals))
-        made[parts[0]] = o
-    # Parameters are set once every OP of the spec exists, so that an expression may name one made further down.
-    for o, vals in later:
-        _set_pars(o, vals)
-    for n, a, b, index in links:
-        src = made.get(a) or _o(p.path.rstrip('/') + '/' + a)
-        dst = made.get(b) or _o(p.path.rstrip('/') + '/' + b)
-        if index >= len(dst.inputConnectors):
-            raise Refused('line %d: %s has %d inputs' % (n, dst.path, len(dst.inputConnectors)))
-        if a in made and b not in made:
-            # A new OP takes over an input that was wired: it is being put into that wire.
-            con = dst.inputConnectors[index]
-            try:
-                was = con.connections[0].owner
+                con.connect(old)
             except Exception:
-                was = getattr(con, 'source', None)
-            if was is not None and was.name not in made:
-                into.append((was, dst))
-        dst.inputConnectors[index].connect(src.outputConnectors[0])
+                pass
+        for o in made.values():
+            try:
+                if getattr(o, 'valid', True):
+                    o.destroy()
+            except Exception:
+                pass
+        if isinstance(e, Refused):
+            raise Refused('%s. Nothing was made' % str(e).rstrip('.'))
+        raise
     # When the COMP held nothing else, arrange the whole network along the wiring. Otherwise arrange only
     # what was made and set it beside what it is wired to; nothing that was already there moves.
     if made and len([c for c in p.children if getattr(c, 'dock', None) is None]) == len(made):
@@ -1616,23 +1665,26 @@ def _inline(p, ops, before, after):
     return said
 
 
-def _beside(p, ops, into=()):
-    """Place OPs just added to a COMP that already holds others. They are arranged along their own wiring,
-    then set as a group to the right of the existing OP that feeds them, in line with it; failing that, to
-    the left of the existing OP they feed; failing that, to the right of everything. Where the spot is
-    taken the group goes to the nearest free height. Nothing that was already there moves, except to make
-    room for OPs wired into an existing wire (into: pairs of the OPs that wire ran between). Returns what
-    to say about it."""
+def _groups(ops):
+    """OPs split into the sets that are wired to one another."""
     ops = list(ops)
-    mine, _ = _extent(ops)
-    inside = set(o.path for o in mine)
-    others = [c for c in p.children if c.path not in inside and c.OPType != 'annotateCOMP']
-    if not others:
-        return ''
-    for before, after in into:
-        said = _inline(p, ops, before, after)
-        if said is not None:
-            return said
+    of = dict((o.path, n) for n, o in enumerate(ops))
+    for o in ops:
+        for i in o.inputs:
+            if i is not None and i.path in of and of[i.path] != of[o.path]:
+                a, b = of[i.path], of[o.path]
+                for k in of:
+                    if of[k] == b:
+                        of[k] = a
+    out = {}
+    for o in ops:
+        out.setdefault(of[o.path], []).append(o)
+    return list(out.values())
+
+
+def _place(p, ops, others):
+    """Set one group beside the OP that feeds it, or the OP it feeds, or failing those to the right of all."""
+    inside = set(o.path for o in _extent(ops)[0])
     _layout(ops)
     _, (x0, y0, x1, y1) = _extent(ops)
     feeds = [(i, o) for o in ops for i in o.inputs if i is not None and i.path not in inside]
@@ -1648,10 +1700,41 @@ def _beside(p, ops, into=()):
     if feeds or takes:
         top = there.nodeY + getattr(there, 'nodeHeight', 90) + (y1 - o.nodeY - getattr(o, 'nodeHeight', 90))
         if _settle(p, ops, left, top):
-            return ''
+            return
     _settle(p, ops, _max(c.nodeX + getattr(c, 'nodeWidth', 130) for c in others) + gap,
             _max(c.nodeY + getattr(c, 'nodeHeight', 90) for c in others))
-    return ''
+
+
+def _beside(p, ops, into=()):
+    """Place OPs just added to a COMP that already holds others. Each set of OPs wired to one another is
+    arranged along its own wiring and set to the right of the existing OP that feeds it, in line with it;
+    failing that, to the left of the existing OP it feeds; failing that, to the right of everything. Where
+    the spot is taken it goes to the nearest free height. Nothing that was already there moves, except to
+    make room for OPs wired into an existing wire (into: pairs of the OPs that wire ran between). Returns
+    what to say about it."""
+    ops = list(ops)
+    inside = set(o.path for o in _extent(ops)[0])
+    others = [c for c in p.children if c.path not in inside and c.OPType != 'annotateCOMP']
+    if not others:
+        return ''
+    wired = [g for g in _groups(ops) if len(g) > 1 or [i for i in g[0].inputs if i is not None] or g[0].outputs]
+    loose = [o for o in ops if not [g for g in wired if o in g]]
+    said, last = '', None
+    # Left to right, so that room made for one group is already there when the next is placed.
+    for g in sorted(wired, key=lambda g: min([i.nodeX for o in g for i in o.inputs if i is not None and i.path not in inside] or [0])):
+        pair = [(b, a) for b, a in into if [o for o in g if b in o.inputs] and [o for o in g if a in o.outputs]]
+        done = _inline(p, g, *pair[0]) if pair else None
+        if done is None:
+            _place(p, g, others)
+        said += done or ''
+        last = g
+    if loose and last is not None:
+        _layout(loose)
+        (x0, y0, x1, y1) = _extent(last)[1]
+        _settle(p, loose, x0, y0 - _GAP)
+    elif loose:
+        _place(p, loose, others)
+    return said
 
 
 def c_show(path):

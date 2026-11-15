@@ -555,6 +555,34 @@ class BridgeTest(unittest.TestCase):
         self.ok('layout', '/c')
         self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 240)
 
+    def test_a_build_that_fails_leaves_nothing_behind(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb levelTOP\nc nullTOP\na -> b\nb -> c\n')
+        before = sorted(k.name for k in op('/c').children)
+        # the third line names a type that does not exist, after two OPs were made and a wire was to be cut
+        out = self.cmd('build', '/c', spec='mid levelTOP\nb -> mid\nmid -> c\nextra noSuchTOP\n')
+        self.assertFalse(out['ok'])
+        self.assertIn('Nothing was made', out['error'])
+        self.assertEqual(sorted(k.name for k in op('/c').children), before)
+        # a parameter that does not exist, found after the wires were changed: the wire b -> c is back
+        out = self.cmd('build', '/c', spec='mid levelTOP nosuchpar=1\nb -> mid\nmid -> c\n')
+        self.assertIn('Nothing was made', out['error'])
+        self.assertEqual(sorted(k.name for k in op('/c').children), before)
+        self.assertEqual([i.name for i in op('/c/c').inputs], ['b'])
+
+    def test_one_build_can_go_into_two_wires(self):
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a noiseTOP\nb levelTOP\nc nullTOP\nd nullTOP\na -> b\nb -> c\nc -> d\n')
+        out = self.ok('build', '/c', spec='p levelTOP\nq levelTOP\na -> p\np -> b\nc -> q\nq -> d\n')
+        a, p, b, c, q, d = self.at('/c', 'a', 'p', 'b', 'c', 'q', 'd')
+        self.assertEqual(len(set(y for x, y in (a, p, b, c, q, d))), 1)            # all on the one row
+        self.assertTrue(a[0] < p[0] < b[0] < c[0] < q[0] < d[0])                    # in the order of the wires
+        self.assertEqual(out.count('made room'), 2)
+        self.assertNotIn('right to left', out)
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
+
     def test_build_refuses_two_wires_into_one_input(self):
         self.ok('new', '/', 'baseCOMP', 'c')
         out = self.cmd('build', '/c', spec='a noiseTOP\nb noiseTOP\nmix levelTOP\na -> mix\nb -> mix\n')

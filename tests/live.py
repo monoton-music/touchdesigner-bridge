@@ -233,6 +233,26 @@ def commands():
     said = ok('wire', comp + '/level_pulse', comp + '/comp_alone', index=1)
     check('and wire says nothing once it is put right', '\nE ' not in said, said)
     ok('rm', comp + '/comp_alone', yes=True)
+    # an expression may read a channel that exists only once the spec is made and wired
+    said = ok('build', comp, spec='xf_spin transformTOP rotate==op("speed_spin")["angle"]\nconst_speed constantCHOP name0=angle value0=6\n'
+                                  'speed_spin speedCHOP\nnoise_spin noiseTOP\nnoise_spin -> xf_spin\nconst_speed -> speed_spin\n')
+    check('build takes an expression on a channel made by the same spec', 'made 4' in said and '\nE ' not in said, said)
+    # a spec that fails part-way leaves nothing: no OPs, and the wire it was cutting is as it was
+    had = nodes(comp)
+    refused = cmd('build', comp, spec='mid_a levelTOP\nmid_b levelTOP opacity==op("nothing_there")["x"]\n'
+                                      'noise_spin -> mid_a\nmid_a -> mid_b\nmid_b -> xf_spin\n')
+    check('a build that fails says so in one line', not refused['ok'] and 'Nothing was made' in refused['error']
+          and 'Traceback' not in refused['error'], str(refused)[:240])
+    now = nodes(comp)
+    check('and leaves nothing behind', sorted(now) == sorted(had) and now['xf_spin'][4] == had['xf_spin'][4], '%s %s' % (sorted(set(now) - set(had)), now['xf_spin'][4]))
+    # one spec put into two wires of someone else's network: both sit on their wires, no wire turns back
+    ok('new', comp, 'baseCOMP', 'two')
+    ok('build', comp + '/two', spec='a noiseTOP\nb levelTOP\nc levelTOP\nd nullTOP\na -> b\nb -> c\nc -> d\n')
+    forget(comp + '/two')
+    said = ok('build', comp + '/two', spec='p blurTOP\nq hsvadjustTOP\na -> p\np -> b\nc -> q\nq -> d\n')
+    n = geometry('two insertions', comp + '/two')
+    check('both are on the row of their wire', len(set(n[k][1] for k in 'apbcqd')) == 1 and said.count('made room') == 2, said)
+    ok('rm', comp + '/two', yes=True)
     refused = cmd('build', comp, spec='x nullTOP\nnoise_src -> x\nlevel_pulse -> x\n')
     check('two wires into one input are refused', not refused['ok'] and 'already wired' in refused['error'])
     check('and nothing was made', 'x' not in nodes(comp))

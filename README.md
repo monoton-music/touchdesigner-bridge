@@ -145,7 +145,7 @@ What a changing command says back:
 
 - `new`, `build`, `set` and `wire` cook the OPs they touched and list their errors and warnings in the reply. An OP that nothing looks at has not cooked, and until it has, TD knows of no error, so `err` alone would call a freshly built network clean.
 - `set` with a value TD will not take, or an expression that fails, is refused in one line and the parameter is put back.
-- `build` sets parameters after every OP of the spec exists, so an expression may name an OP made further down. Two wires into one input are refused before anything is made.
+- `build` is all or nothing. A spec that fails part-way leaves no OPs behind and puts back any wire it had cut. Expressions are tried once every OP of the spec is made and wired, so one may name an OP, or read a channel, that the spec makes further down. Two wires into one input are refused before anything is made.
 
 Every command except `py` takes `--when 'EXPR'`.
 
@@ -211,7 +211,7 @@ The fixed commands are not meant to cover the whole of TD.
 
 ### The effect of a change is compared in one frame
 
-- `compare` takes the picture before and after a change in the same frame, and puts the change back. It takes parameter values, and a replacement in the text of a DAT.
+- `compare` takes the picture before and after a change in the same frame, and puts the change back. It takes parameter values, flags, and a replacement in the text of a DAT.
 - Two pictures taken at different times cannot tell the change from the scene moving on.
 - It returns both pictures as numbers, how much of the picture differs and where, and a sheet of the two side by side. When nothing differs, it says so.
 
