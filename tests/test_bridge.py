@@ -610,6 +610,49 @@ class BridgeTest(unittest.TestCase):
         self.assertGreater(spare[0], end[0] + 130 + 40 + 130)
         self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
 
+    def test_layout_keeps_an_op_next_to_the_unwired_op_that_names_it(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        # Nothing here is wired to the Render TOP: it names the camera and the geometry, and the geometry
+        # names its material.
+        self.ok('build', '/c', spec='mat_gold phongMAT\nzz_spare textDAT\ncam_main cameraCOMP\n'
+                                    'geo_ball geometryCOMP material=mat_gold\n'
+                                    'render_main renderTOP camera=cam_main geometry=geo_ball\nnull_final nullTOP\n'
+                                    'render_main -> null_final\n')
+        render, cam, geo, mat, spare, final = self.at('/c', 'render_main', 'cam_main', 'geo_ball', 'mat_gold',
+                                                      'zz_spare', 'null_final')
+        # all in the column of the Render TOP, and the material is the very next node under its geometry
+        self.assertEqual([cam[0], geo[0], mat[0]], [render[0]] * 3)
+        self.assertEqual(geo[1] - mat[1], 90 + 40)
+        self.assertLess(cam[1], render[1])
+        self.assertTrue(cam[1] > geo[1] or cam[1] < mat[1])
+        self.assertGreater(spare[0], final[0] + 130 + 40 + 130)
+        self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
+        # A light that looks at the geometry names it too: the geometry stays with the Render TOP. A CHOP that
+        # two OPs along the wiring read is under neither of them
+        self.ok('new', '/', 'baseCOMP', 'e')
+        self.ok('build', '/e', spec='ctl_speed noiseCHOP\ngeo_ball geometryCOMP\nlight_key lightCOMP lookat=geo_ball\n'
+                                    'render_main renderTOP geometry=geo_ball\n'
+                                    'noise_a noiseTOP seed==op("ctl_speed")["chan1"]\n'
+                                    'noise_b noiseTOP seed==op("ctl_speed")["chan1"]\nnull_final nullTOP\n'
+                                    'noise_a -> noise_b\nnoise_b -> render_main\nrender_main -> null_final\n')
+        render, geo, ctl, a, b, final = self.at('/e', 'render_main', 'geo_ball', 'ctl_speed', 'noise_a', 'noise_b',
+                                                'null_final')
+        self.assertEqual(geo[0], render[0])
+        self.assertGreater(ctl[0], final[0] + 130 + 40 + 130)
+        # With no wiring at all the two still sit together, whatever else is unwired
+        self.ok('new', '/', 'baseCOMP', 'd')
+        self.ok('build', '/d', spec='a1 nullCHOP\na2 nullCHOP\ngeo_ball geometryCOMP material=mat_gold\n'
+                                    'light_key lightCOMP\nmat_blue phongMAT\nmat_gold phongMAT\nt1 nullTOP\n')
+        geo, mat = self.at('/d', 'geo_ball', 'mat_gold')
+        self.assertEqual(geo[0], mat[0])
+        self.assertEqual(geo[1] - mat[1], 90 + 40)
+        self.assertEqual(self.ok('overlaps', '/d'), 'no overlapping OPs in 1 COMPs')
+        # A geometry made later for a material that is already there goes under that material
+        self.ok('build', '/d', spec='geo_cube geometryCOMP material=mat_blue\n')
+        cube, blue = self.at('/d', 'geo_cube', 'mat_blue')
+        self.assertLess(abs(cube[0] - blue[0]) + abs(cube[1] - blue[1]), 2 * (130 + 40 + 90 + 40))
+        self.assertEqual(self.ok('overlaps', '/d'), 'no overlapping OPs in 1 COMPs')
+
     def test_overlaps_names_wires_that_turn_back_and_ls_gives_positions(self):
         op = self.w.globals['op']
         self.ok('new', '/', 'baseCOMP', 'c')

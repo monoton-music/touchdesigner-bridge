@@ -1475,33 +1475,70 @@ def _layout(ops, x0=0, y0=0):
         row[i.path] = below(row[i.path], depth[i.path], depth[i.path])
         cells.setdefault(row[i.path], set()).add(depth[i.path])
     cell = dict((o.path, (depth[o.path], row[o.path])) for o in wired)
-    # An unwired OP that a wired one names in a parameter (an LFO behind an expression, the table of a Ramp)
-    # goes under that OP. The rest go to the right in columns, past an empty one, so the network grows
-    # sideways and not downward.
+    # An unwired OP that another names in a parameter (an LFO behind an expression, the material of a
+    # Geometry COMP) goes right under that OP, and what it names in turn right under it: a Render TOP has its
+    # geometry under it and the material under the geometry. The rest, and what several wired OPs share, go
+    # to the right in columns, past an empty one, so the network grows sideways and not downward.
     loose.sort(key=lambda o: (o.family, o.name))
-    named = {}
-    if loose and wired:
+    named, kids = {}, {}
+    if loose:
         word = re.compile(r'(?<![\w/])(%s)(?!\w)' % '|'.join(re.escape(o.name) for o in loose))
-        for o in wired:
-            try:
-                said = ' '.join('%s %s' % (p.expr or '', p.val if isinstance(p.val, str) else '')
-                                for p in o.pars() if not p.isDefault)
-            except Exception:
+        by_name = dict((o.name, o) for o in loose)
+        who = {}
+        # Wired OPs are asked first: an OP named from the wiring belongs there before anywhere else.
+        for o in wired + loose:
+            for name in word.findall(_said(o)):
+                if name != o.name and o not in who.setdefault(name, []):
+                    who[name].append(o)
+        for name, users in who.items():
+            # One that several OPs along the wiring read (a control CHOP behind many expressions, a camera
+            # two Render TOPs share) belongs to none of them: under one it would look like that one's own.
+            if len([o for o in users if o in wired]) < 2:
+                named[name] = users[0]
+                kids.setdefault(users[0].path, []).append(by_name[name])
+
+    def under(o):
+        c, r = cell[o.path]
+        for k in kids.get(o.path, ()):
+            if k.path in cell:
                 continue
-            for name in word.findall(said):
-                named.setdefault(name, o)
-    for o in [o for o in loose if o.name in named]:
-        # The nearest free cell under it. A neighbour is no concern here: TD draws the reference as an arrow.
-        c, r = depth[named[o.name].path], row[named[o.name].path] + 1
-        while c in cells.get(r, ()):
+            # The nearest free cell under it. A neighbour is no concern here: TD draws the reference as an arrow.
             r += 1
-        cells.setdefault(r, set()).add(c)
-        cell[o.path] = (c, r)
-    rest = [o for o in loose if o.path not in cell]
+            while c in cells.get(r, ()):
+                r += 1
+            cells.setdefault(r, set()).add(c)
+            cell[k.path] = (c, r)
+            under(k)
+
+    def family(o, seen=None):
+        """What o names among the unwired OPs not set down yet, and what those name, in that order."""
+        seen = seen if seen is not None else set([o.path])
+        out = []
+        for k in kids.get(o.path, ()):
+            if k.path not in seen and k.path not in cell:
+                seen.add(k.path)
+                out.append(k)
+                out.extend(family(k, seen))
+        return out
+
+    for o in wired:
+        under(o)
     wide = (_max([depth[o.path] for o in wired] + [0]) + 2) if wired else 0
     tall = _max(_max(cells) + 1 if cells else 0, 3)
-    for n, o in enumerate(rest):
-        cell[o.path] = (wide + n // tall, n % tall)
+    c, r = wide, 0
+    # First the ones nothing names, each followed by what it names; then whatever only names itself in a ring.
+    for o in [o for o in loose if o.name not in named] + loose:
+        if o.path in cell:
+            continue
+        group = [o] + family(o)
+        # A group stays in one column where it can: an OP and what it names are not split over two.
+        if r and r + len(group) > tall:
+            c, r = c + 1, 0
+        for k in group:
+            if r >= tall and len(group) > tall:
+                c, r = c + 1, 0
+            cell[k.path] = (c, r)
+            r += 1
     # A column is as wide, and a row as tall, as its largest node with whatever is docked under it needs.
     cw, ch = {}, {}
     for o in ops:
@@ -1522,6 +1559,16 @@ def _layout(ops, x0=0, y0=0):
         for k, dk in enumerate(_shown_docks(o) + [d for d in (getattr(o, 'docked', []) or []) if _folded(d)]):
             dk.nodeX, dk.nodeY = o.nodeX + k * 150, o.nodeY - 110
     return (xs[_max(cw) + 1], ys[_max(ch) + 1]) if ops else (0, 0)
+
+
+def _said(o):
+    """The expressions and the text values of the parameters of an OP that are not at their default: where
+    it names other OPs."""
+    try:
+        return ' '.join('%s %s' % (p.expr or '', p.val if isinstance(p.val, str) else '')
+                        for p in o.pars() if not p.isDefault)
+    except Exception:
+        return ''
 
 
 # Where this bridge last put each OP it made or arranged, by OP id. An OP that is not in here, or is no longer
@@ -1733,7 +1780,13 @@ def _beside(p, ops, into=()):
         (x0, y0, x1, y1) = _extent(last)[1]
         _settle(p, loose, x0, y0 - _GAP)
     elif loose:
-        _place(p, loose, others)
+        # Unwired OPs that name one that was already there (a Geometry COMP made for a material that exists)
+        # go under it. Failing that, to the right of everything.
+        _layout(loose)
+        said_by = ' '.join(_said(o) for o in loose)
+        there = [c for c in others if re.search(r'(?<![\w/])%s(?!\w)' % re.escape(c.name), said_by)]
+        if not (there and _settle(p, loose, there[0].nodeX, there[0].nodeY - _GAP)):
+            _place(p, loose, others)
     return said
 
 

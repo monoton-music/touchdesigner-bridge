@@ -231,6 +231,13 @@ class OP:
             o.addPar('Bodytext', '', style='Str')
         if optype == 'infoDAT':
             o.addPar('op', '', style='OP')
+        if optype == 'geometryCOMP':
+            o.addPar('material', '', style='MAT')
+        if optype == 'lightCOMP':
+            o.addPar('lookat', '', style='COMP')
+        if optype == 'renderTOP':
+            o.addPar('camera', '', style='COMP')
+            o.addPar('geometry', '', style='COMP')
         if optype == 'moviefileoutTOP':
             o.addPar('videocodec', 'mjpa', style='Menu', menuNames=['mjpa', 'h264', 'hap'])
             o.addPar('file', 'TDMovieOut.0.mov', style='File', expr="'TDMovieOut' + me.fileSuffix")
@@ -267,7 +274,8 @@ class OP:
 
 KNOWN_TYPES = {'noiseTOP': 'TOP', 'nullTOP': 'TOP', 'levelTOP': 'TOP', 'textDAT': 'DAT', 'baseCOMP': 'COMP',
                'noiseCHOP': 'CHOP', 'boxSOP': 'SOP', 'glslTOP': 'TOP', 'infoDAT': 'DAT', 'annotateCOMP': 'COMP',
-               'moviefileoutTOP': 'TOP', 'geometryCOMP': 'COMP', 'renderTOP': 'TOP'}
+               'moviefileoutTOP': 'TOP', 'geometryCOMP': 'COMP', 'renderTOP': 'TOP', 'cameraCOMP': 'COMP',
+               'lightCOMP': 'COMP', 'phongMAT': 'MAT', 'nullCHOP': 'CHOP'}
 
 
 class AbsTime:
