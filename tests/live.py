@@ -218,7 +218,8 @@ def commands():
     said = ok('build', comp, spec='noise_src noiseTOP\nlevel_pulse levelTOP brightness1==op("lfo_pulse")["chan1"]\nlfo_pulse lfoCHOP\n'
                                   'null_final nullTOP\nnoise_src -> level_pulse\nlevel_pulse -> null_final\n')
     n = geometry('commands', comp)
-    check('the LFO sits under the OP that reads it', n['lfo_pulse'][0] == n['level_pulse'][0] and n['lfo_pulse'][1] < n['level_pulse'][1])
+    check('the LFO sits just left of the OP that reads it, a row down', n['lfo_pulse'][0] + n['lfo_pulse'][2] <= n['level_pulse'][0]
+          and n['level_pulse'][0] - n['lfo_pulse'][0] <= 400 and n['lfo_pulse'][1] < n['level_pulse'][1])
     for k in range(3):
         ok('new', comp, 'noiseTOP')
     said = ok('new', comp, 'nullTOP', 'null_alone')

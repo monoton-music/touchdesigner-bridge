@@ -1380,22 +1380,72 @@ _GAP = 40  # the space left between neighbouring nodes, along the wiring and bet
 
 
 def _layout(ops, x0=0, y0=0):
-    """Place OPs left to right along the wiring, from (x0, y0). A side chain sits in the columns just before
+    """Place OPs left to right along the wiring, from (x0, y0). A reference in a parameter counts as a wire
+    from the OP that is named to the OP that names it. A side chain sits in the columns just before
     the OP it joins instead of piling up at the far left, and the branches of a fan-out start in one column.
     A chain runs along one row: an OP shares the row of what its first input feeds into, and each further
     input comes in from a row below, under everything that leads into the inputs before it. Chains keep the
-    top-to-bottom order they had. Unwired OPs go in columns to the right, no taller than the wired part.
+    top-to-bottom order they had; a branch starts in the nearest clear row under where it leaves, and a chain
+    nothing ties to the ones above starts past a narrow empty row. Unwired OPs that nothing refers to go in
+    columns to the right, no taller than the wired part.
     DATs docked to an OP are tucked under it. Returns the width and height used."""
     ops = list(ops)
     inside = set(o.path for o in ops)
     order = dict((o.path, n) for n, o in enumerate(ops))
     depth = {}
 
+    def src(i):
+        # A wire out of a COMP starts at an Out operator inside it: here it starts at the COMP.
+        return i if i is None or i.path in inside else _up(i)
+
+    rin = dict((o.path, [i for i in map(src, o.inputs) if i is not None and i.path in inside]) for o in ops)
+    rout = {}
+    for o in ops:
+        for i in rin[o.path]:
+            rout.setdefault(i.path, []).append(o)
+
+    # What each OP names in its parameters, among the OPs being arranged. Only looked up when some OP has no
+    # wire at all: those are the ones a parameter can place.
+    reads, feeds, fed = {}, {}, {}
+
+    def leads(a, b):
+        """Whether what a makes already reaches b, by wires or by the references taken so far. A reference
+        that would close a ring is left out: the wires decide the order, and no wire is turned back for it."""
+        todo, seen = [a], set([a.path])
+        while todo:
+            n = todo.pop()
+            if n.path == b.path:
+                return True
+            for x in rout.get(n.path, []) + fed.get(n.path, []):
+                if x.path not in seen:
+                    seen.add(x.path)
+                    todo.append(x)
+        return False
+    free = [o for o in ops if not [i for i in o.inputs if i is not None] and not o.outputs and o.path not in rout]
+    if len(ops) > 1:
+        by_name = dict((o.name, o) for o in ops)
+        word = re.compile(r'(?<![\w/])(%s)(?!\w)' % '|'.join(re.escape(n) for n in by_name))
+        for o in ops:
+            for name in word.findall(_said(o)):
+                if name != o.name and by_name[name] not in reads.setdefault(o.path, []):
+                    reads[o.path].append(by_name[name])
+        # People set an OP that another reads in a parameter to the left of the one reading it and close by,
+        # as they would if the two were wired (in the networks that come with TD, three references in four).
+        # So a reference is arranged as a wire that is not drawn: from the OP that is named to the OP that
+        # names it. The exception is a material that reads nothing itself: it is assigned, not read from, and
+        # sits right under its Geometry COMP.
+        step = set(o.path for o in ops if o.family != 'MAT' or reads.get(o.path) or o not in free)
+        for o in ops:
+            for n in reads.get(o.path, ()):
+                if n.path in step and n not in rin[o.path] and not leads(o, n):
+                    feeds.setdefault(o.path, []).append(n)
+                    fed.setdefault(n.path, []).append(o)
+
     def ins(o):
-        return [i for i in o.inputs if i is not None and i.path in inside]
+        return rin[o.path] + feeds.get(o.path, [])
 
     def outs(o):
-        return [x for x in o.outputs if x.path in inside]
+        return rout.get(o.path, []) + fed.get(o.path, [])
 
     def walk(o, seen):
         if o.path in depth:
@@ -1446,7 +1496,7 @@ def _layout(ops, x0=0, y0=0):
         cells.setdefault(r, set()).add(depth[o.path])
         # Only the OP on the first input carries the row on. When that one is not among the OPs being arranged
         # (it was already there), the others all come in from below.
-        along = ([i for i in o.inputs if i is not None] or [None])[0] in ins(o)
+        along = ([src(i) for i in o.inputs if i is not None] or feeds.get(o.path) or [None])[0] in ins(o)
         for i in ins(o):
             if i.path in row or depth[i.path] >= depth[o.path]:
                 continue
@@ -1460,55 +1510,107 @@ def _layout(ops, x0=0, y0=0):
     ends = [o for o in wired if not [x for x in outs(o) if depth[x.path] > depth[o.path]]]
     # The end furthest along takes the top row, so the longest line through the network runs straight and the
     # shorter branches hang under it. Ends that already sit at different heights keep that order.
-    for o in sorted(ends, key=lambda o: (-o.nodeY, -depth[o.path], order[o.path])) + wired:
-        if o.path not in row:
-            place(o, _max(cells) + 1 if cells else 0)
-    # Whatever order the rows were filled in, no wire may be left running along a row behind an OP that sits
-    # between its two ends: the OP it starts from goes down to the nearest clear row.
-    for _ in range(len(wired) * 2):
-        hit = [i for o in wired for i in ins(o) if row[i.path] == row[o.path]
-               and [c for c in cells[row[o.path]] if depth[i.path] < c < depth[o.path]]]
-        if not hit:
+    # The rows depend on the order the ends are taken in, and a branch may land above an end taken before it.
+    # So the rows are filled again in the order they came out, until that order gives the same rows:
+    # arranging what is already arranged then changes nothing.
+    # (A taller node is centred on its row, so its height is taken out to tell which row it was on.)
+    height = dict((o.path, -o.nodeY - (int(getattr(o, 'nodeHeight', 90)) - 90) // 2) for o in wired)
+    tried = []
+    for _ in range(12):
+        row.clear()
+        cells.clear()
+        for o in sorted(ends, key=lambda o: (height[o.path], -depth[o.path], order[o.path])) + wired:
+            if o.path not in row:
+                before = set(row)
+                # A branch off what is already set down starts in the nearest clear row under where it leaves,
+                # not under everything: it stays beside what it came from.
+                todo, seen, anchors = [o], set([o.path]), []
+                while todo:
+                    for i in ins(todo.pop()):
+                        if i.path in row:
+                            anchors.append(i)
+                        elif i.path not in seen and i.path in depth:
+                            seen.add(i.path)
+                            todo.append(i)
+                if anchors:
+                    near = sorted(anchors, key=lambda i: -depth[i.path])[0]
+                    place(o, below(row[near.path], min(depth[k] for k in seen), depth[o.path]))
+                else:
+                    place(o, _max(cells) + 1 if cells else 0)
+                new = [k for k in wired if k.path in row and k.path not in before]
+                # What neither a wire nor a reference ties to the rows above is another line of work: it starts
+                # past a narrow empty row, so the space says where one ends and the next begins.
+                if before and not anchors:
+                    for k in new:
+                        cells[row[k.path]].discard(depth[k.path])
+                        row[k.path] += 1
+                    for k in new:
+                        cells.setdefault(row[k.path], set()).add(depth[k.path])
+                    for r in [r for r in cells if not cells[r]]:
+                        del cells[r]
+        # Whatever order the rows were filled in, no wire may be left running along a row behind an OP that sits
+        # between its two ends: the OP it starts from goes down to the nearest clear row.
+        for _ in range(len(wired) * 2):
+            hit = [i for o in wired for i in ins(o) if row[i.path] == row[o.path]
+                   and [c for c in cells[row[o.path]] if depth[i.path] < c < depth[o.path]]]
+            if not hit:
+                break
+            i = hit[0]
+            cells[row[i.path]].discard(depth[i.path])
+            row[i.path] = below(row[i.path], depth[i.path], depth[i.path])
+            cells.setdefault(row[i.path], set()).add(depth[i.path])
+        got = dict((p, row[p]) for p in height)
+        if got == height or len(tried) == 11:
             break
-        i = hit[0]
-        cells[row[i.path]].discard(depth[i.path])
-        row[i.path] = below(row[i.path], depth[i.path], depth[i.path])
-        cells.setdefault(row[i.path], set()).add(depth[i.path])
+        if got in [g for h, g in tried]:
+            # The orders go round in a ring: always settle on the same one of them.
+            ring = tried[[g for h, g in tried].index(got):] + [(height, got)]
+            height = sorted(ring, key=lambda hg: sorted(hg[1].items()))[0][0]
+            tried = [None] * 11
+            continue
+        tried.append((height, got))
+        height = got
     cell = dict((o.path, (depth[o.path], row[o.path])) for o in wired)
-    # An unwired OP that another names in a parameter (an LFO behind an expression, the material of a
-    # Geometry COMP) goes right under that OP, and what it names in turn right under it: a Render TOP has its
-    # geometry under it and the material under the geometry. The rest, and what several wired OPs share, go
-    # to the right in columns, past an empty one, so the network grows sideways and not downward.
+    # What is left unwired by now is a material that reads nothing, or an OP nothing refers to. The material
+    # goes right under the OP it is assigned to; the rest go to the right in columns, past an empty one, so
+    # the network grows sideways and not downward.
     loose.sort(key=lambda o: (o.family, o.name))
     named, kids = {}, {}
-    if loose:
-        word = re.compile(r'(?<![\w/])(%s)(?!\w)' % '|'.join(re.escape(o.name) for o in loose))
-        by_name = dict((o.name, o) for o in loose)
-        who = {}
-        # Wired OPs are asked first: an OP named from the wiring belongs there before anywhere else.
-        for o in wired + loose:
-            for name in word.findall(_said(o)):
-                if name != o.name and o not in who.setdefault(name, []):
-                    who[name].append(o)
-        for name, users in who.items():
-            # One that several OPs along the wiring read (a control CHOP behind many expressions, a camera
-            # two Render TOPs share) belongs to none of them: under one it would look like that one's own.
-            if len([o for o in users if o in wired]) < 2:
-                named[name] = users[0]
-                kids.setdefault(users[0].path, []).append(by_name[name])
+    by_name = dict((o.name, o) for o in loose)
+    # Wired OPs are asked first: an OP named from the wiring belongs there before anywhere else.
+    for o in wired + loose:
+        for n in reads.get(o.path, ()):
+            if n.name in by_name and n.name not in named:
+                named[n.name] = o
+                kids.setdefault(o.path, []).append(n)
 
-    def under(o):
-        c, r = cell[o.path]
+    hung = {}
+
+    def under(o, top=None):
+        top = top or o.path
+        c = cell[o.path][0]
         for k in kids.get(o.path, ()):
             if k.path in cell:
                 continue
-            # The nearest free cell under it. A neighbour is no concern here: TD draws the reference as an arrow.
-            r += 1
-            while c in cells.get(r, ()):
+            # Right under it, past what already hangs from the same OP. Where another OP has that cell, a row
+            # is opened for it: further down the column it would sit under an OP it has nothing to do with,
+            # and read as that one's own.
+            r = cell[o.path][1] + 1
+            there = dict((v, p) for p, v in cell.items())
+            while hung.get(there.get((c, r))) == top:
                 r += 1
+            if (c, r) in there:
+                for p, (pc, pr) in list(cell.items()):
+                    if pr >= r:
+                        cell[p] = (pc, pr + 1)
+                        if p in row:
+                            row[p] = pr + 1
+                moved = dict((n + 1 if n >= r else n, cols) for n, cols in cells.items())
+                cells.clear()
+                cells.update(moved)
             cells.setdefault(r, set()).add(c)
-            cell[k.path] = (c, r)
-            under(k)
+            cell[k.path], hung[k.path] = (c, r), top
+            under(k, top)
 
     def family(o, seen=None):
         """What o names among the unwired OPs not set down yet, and what those name, in that order."""
@@ -1546,6 +1648,9 @@ def _layout(ops, x0=0, y0=0):
         docks = len(_shown_docks(o))
         cw[c] = _max(cw.get(c, 130 + _GAP), int(getattr(o, 'nodeWidth', 130)) + _GAP, docks * 150 - 20 + _GAP)
         ch[r] = _max(ch.get(r, 90 + _GAP), int(getattr(o, 'nodeHeight', 90)) + _GAP + (110 if docks else 0))
+    for r in range(_max(ch) + 1):
+        if r not in ch:
+            ch[r] = 60       # a row left empty between two lines of work
     xs, ys = {0: 0}, {0: 0}
     for c in range(_max(cw) + 1):
         xs[c + 1] = xs[c] + cw.get(c, 130 + _GAP)
@@ -2045,7 +2150,9 @@ def c_overlaps(path='/', deep=True):
         if hits:
             total += len(hits)
             lines.append('%s  %d: %s%s' % (c.path, len(hits), ', '.join('%s/%s' % h for h in hits[:6]), ' ...' if len(hits) > 6 else ''))
-        turned = ['%s -> %s' % (i.name, o.name) for o in c.children for i in o.inputs
+        # A wire out of a child COMP is measured from that COMP, not from the Out operator inside it.
+        turned = ['%s -> %s' % (i.name, o.name) for o in c.children
+                  for i in [i if i is None or _up(i) is c or _up(i) == c else _up(i) for i in o.inputs]
                   if i is not None and i.nodeX + getattr(i, 'nodeWidth', 130) > o.nodeX]
         if turned:
             back.append('%s  %d wires run right to left: %s%s' % (c.path, len(turned), ', '.join(turned[:6]), ' ...' if len(turned) > 6 else ''))

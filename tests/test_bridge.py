@@ -549,11 +549,11 @@ class BridgeTest(unittest.TestCase):
         self.ok('build', '/c', spec='a noiseTOP\nb nullTOP\nc nullTOP\nd nullTOP\na -> b\nc -> d\n')
         keys = fake_td.OP('a_keys', 'textDAT', 'DAT', op('/c'), dock=op('/c/a'), showDocked=False)
         self.ok('layout', '/c', yes=True)
-        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 130)          # the rows stay one node apart
+        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 130 + 60)     # one node apart, and the narrow row between two unwired chains
         self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
         keys.showDocked = True                                               # opened: now it needs its room
         self.ok('layout', '/c')
-        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 240)
+        self.assertEqual(op('/c/a').nodeY - op('/c/c').nodeY, 240 + 60)
 
     def test_a_build_that_fails_leaves_nothing_behind(self):
         op = self.w.globals['op']
@@ -603,9 +603,9 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(late[1], e2[1])
         self.assertLess(late[0], s5[0])
         self.assertGreater(late[0], e2[0] + 130 + 40 + 130)
-        # lfo is wired to nothing, but drive reads it in an expression: it goes under drive
-        self.assertEqual(lfo[0], drive[0])
-        self.assertLess(lfo[1], drive[1])
+        # lfo is wired to nothing, but drive reads it in an expression: it sits just left of drive, on its
+        # row, as if wired into it
+        self.assertEqual(lfo, (drive[0] - 130 - 40, drive[1]))
         # spare belongs to nothing: to the right, past an empty column
         self.assertGreater(spare[0], end[0] + 130 + 40 + 130)
         self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
@@ -620,25 +620,58 @@ class BridgeTest(unittest.TestCase):
                                     'render_main -> null_final\n')
         render, cam, geo, mat, spare, final = self.at('/c', 'render_main', 'cam_main', 'geo_ball', 'mat_gold',
                                                       'zz_spare', 'null_final')
-        # all in the column of the Render TOP, and the material is the very next node under its geometry
-        self.assertEqual([cam[0], geo[0], mat[0]], [render[0]] * 3)
-        self.assertEqual(geo[1] - mat[1], 90 + 40)
-        self.assertLess(cam[1], render[1])
-        self.assertTrue(cam[1] > geo[1] or cam[1] < mat[1])
+        # what the Render TOP names leads into it from the left, like inputs, and the material is the very
+        # next node under its geometry
+        self.assertLess(cam[0], render[0])
+        self.assertLess(geo[0], render[0])
+        self.assertLess(render[0] - geo[0], 2 * (130 + 40) + 1)
+        self.assertEqual((geo[0], geo[1] - mat[1]), (mat[0], 90 + 40))
+        self.assertNotEqual(cam[1], geo[1])
         self.assertGreater(spare[0], final[0] + 130 + 40 + 130)
         self.assertEqual(self.ok('overlaps', '/c'), 'no overlapping OPs in 1 COMPs')
-        # A light that looks at the geometry names it too: the geometry stays with the Render TOP. A CHOP that
-        # two OPs along the wiring read is under neither of them
+        # A CHOP that two OPs along the wiring read sits before both, and the light that looks at the
+        # geometry comes after the geometry
         self.ok('new', '/', 'baseCOMP', 'e')
         self.ok('build', '/e', spec='ctl_speed noiseCHOP\ngeo_ball geometryCOMP\nlight_key lightCOMP lookat=geo_ball\n'
                                     'render_main renderTOP geometry=geo_ball\n'
                                     'noise_a noiseTOP seed==op("ctl_speed")["chan1"]\n'
                                     'noise_b noiseTOP seed==op("ctl_speed")["chan1"]\nnull_final nullTOP\n'
                                     'noise_a -> noise_b\nnoise_b -> render_main\nrender_main -> null_final\n')
-        render, geo, ctl, a, b, final = self.at('/e', 'render_main', 'geo_ball', 'ctl_speed', 'noise_a', 'noise_b',
-                                                'null_final')
-        self.assertEqual(geo[0], render[0])
-        self.assertGreater(ctl[0], final[0] + 130 + 40 + 130)
+        render, geo, ctl, a, b, light = self.at('/e', 'render_main', 'geo_ball', 'ctl_speed', 'noise_a', 'noise_b',
+                                                'light_key')
+        self.assertLess(ctl[0], a[0])
+        self.assertLess(geo[0], render[0])
+        self.assertLess(geo[0], light[0])
+        self.assertEqual(self.ok('overlaps', '/e'), 'no overlapping OPs in 1 COMPs')
+        # Unwired CHOPs that hand a value on through expressions are a flow: it runs left to right, on one
+        # row, into the OP that reads its end
+        self.ok('new', '/', 'baseCOMP', 'f')
+        self.ok('build', '/f', spec='table_song textDAT\nstate_song noiseCHOP seed==len(op("table_song").text)\n'
+                                    'values_now noiseCHOP seed==op("state_song")["chan1"]\n'
+                                    'noise_wipe noiseTOP seed==op("values_now")["chan1"]\nnull_final nullTOP\n'
+                                    'noise_wipe -> null_final\n')
+        table, state, values, wipe = self.at('/f', 'table_song', 'state_song', 'values_now', 'noise_wipe')
+        self.assertTrue(table[0] < state[0] < values[0] < wipe[0])
+        self.assertEqual(len(set([table[1], state[1], values[1], wipe[1]])), 1)
+        self.assertEqual(self.ok('overlaps', '/f'), 'no overlapping OPs in 1 COMPs')
+        # Two OPs that read each other, and a wire with a reference back along it, do not turn a wire round
+        self.ok('new', '/', 'baseCOMP', 'g')
+        self.ok('build', '/g', spec='noise_a noiseTOP seed==op("null_out").width\nnull_out nullTOP\n'
+                                    'noise_x noiseCHOP seed==op("noise_y")["chan1"]\n'
+                                    'noise_y noiseCHOP seed==op("noise_x")["chan1"]\nnoise_a -> null_out\n')
+        a, out = self.at('/g', 'noise_a', 'null_out')
+        self.assertLess(a[0], out[0])
+        self.assertEqual(self.ok('overlaps', '/g'), 'no overlapping OPs in 1 COMPs')
+        # A wire out of a child COMP counts as a wire from that COMP
+        op = self.w.globals['op']
+        self.ok('new', '/', 'baseCOMP', 'h')
+        self.ok('build', '/h', spec='base_src baseCOMP\nnull_a nullTOP\nnull_b nullTOP\nnull_a -> null_b\n')
+        inner = fake_td.OP('out1', 'nullTOP', 'TOP', op('/h/base_src'))
+        op('/h/null_a').inputs.append(inner)
+        self.ok('layout', '/h', yes=True)
+        src, na = self.at('/h', 'base_src', 'null_a')
+        self.assertEqual(src, (na[0] - 130 - 40, na[1]))
+        self.assertEqual(self.ok('overlaps', '/h'), 'no overlapping OPs in 2 COMPs')
         # With no wiring at all the two still sit together, whatever else is unwired
         self.ok('new', '/', 'baseCOMP', 'd')
         self.ok('build', '/d', spec='a1 nullCHOP\na2 nullCHOP\ngeo_ball geometryCOMP material=mat_gold\n'
