@@ -226,7 +226,10 @@ def shot(d, comp, file, timeout):
 
 
 def to_td(path):
-    """Convert a local path to the path TD sees."""
+    """Convert a local path to the path TD sees. A path that is already a Windows path is passed as it is;
+    on WSL, os.path.abspath would otherwise treat 'D:\\x\\y.mp4' as a file name in the current folder."""
+    if IS_WSL and re.match(r'^[A-Za-z]:[\\/]', path):
+        return path
     path = os.path.abspath(path)
     if IS_WSL:
         return subprocess.run(['wslpath', '-w', path], capture_output=True, text=True).stdout.strip()
