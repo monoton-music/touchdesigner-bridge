@@ -66,8 +66,18 @@ Building
 - The minimum that renders in 3D is a Geometry COMP (render and display flags on the last OP inside), a Camera COMP and a Render TOP. A light is needed only for materials that use lighting.
 - Shaders go in through `write`. The DAT is marked as GLSL, docked to the OP that compiles it and compiled at once; the reply says `compiled` or lists the compiler's errors. `rename` keeps the OP pointing at a renamed shader DAT.
 - A `py` script is one undo step. If it raises part-way, what it changed is undone, so a failed script does not leave the network half-built.
+- In a `py` script a relative `op('name')` finds nothing, because the script does not run inside a COMP. Get the COMP first: `p = op('/project1'); p.op('name')`.
+- A GLSL TOP reads three inputs. For more, use a GLSL Multi TOP; `err` names a GLSL TOP wired with more. `setInputs` takes OPs only; an output of a COMP (`comp.outputConnectors[n]`) goes in through `inputConnectors[i].connect(...)`.
+- GLSL MATs that share uniforms keep the values in one MAT, and the others point at it with `inherit`. Kept apart, one is left with old values and a change seems to do nothing.
+- An expression on a material that reads the result of the Render TOP drawing it (`op('render').height`, a camera's `worldTransform`) makes a cook loop, which `err` shows. Read the settings instead (`op('render').par.resolutionh`, the camera's own parameters).
+- A Table DAT is written one cell at a time (`t[row, col] = v`); a slice raises Cell does not exist.
 - `set` adds sequence blocks as needed (`attr3func=lt` on an OP that has two blocks).
 - A material with a normal map needs tangents on the geometry: an Attribute Create SOP with Compute Tangents, or a Normal POP.
+
+Keys and Perform mode
+
+- A Keyboard In DAT calls `onKey(dat, keyInfo)` in its callbacks DAT. Use `keyInfo.webCode` (`KeyM`, `Digit1`, `ArrowLeft`, `Space`), which does not change with the keyboard language, and act only when `keyInfo.state` is true. In the network editor some keys also act on the network (Tab opens the OP menu), so a show runs in Perform mode (F1).
+- Perform mode shows the Window COMP named by `project.performWindowPath`, `/perform` by default, which a new project may not have. Make a Window COMP whose Window Operator is the final Out TOP and set `project.performWindowPath` to it; `err` on the project says when the window it names is missing or shows nothing.
 
 POPs and instancing
 

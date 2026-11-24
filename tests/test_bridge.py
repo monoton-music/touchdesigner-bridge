@@ -122,6 +122,24 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('W script1: slow thing', r)
         self.assertEqual(self.ok('err', '/project1/null1'), 'no errors, no warnings')
 
+    def test_err_names_a_perform_window_that_is_not_there(self):
+        proj = self.w.globals['project']
+        proj.performWindowPath = '/perform'
+        self.assertIn('Perform mode shows /perform, which does not exist', self.ok('err', '/project1'))
+        # Deeper COMPs are not asked about it, and a project without the setting says nothing.
+        self.assertNotIn('Perform', self.ok('err', '/project1/null1'))
+        del proj.performWindowPath
+        self.assertNotIn('Perform', self.ok('err', '/project1'))
+
+    def test_err_names_a_glsl_top_with_more_than_three_inputs(self):
+        p = self.w.globals['op']('/project1')
+        g = fake_td.OP('look', 'glslTOP', 'TOP', p)
+        g.inputConnectors = [fake_td.Connector(g) for _ in range(4)]
+        srcs = [fake_td.OP('src%d' % i, 'noiseTOP', 'TOP', p) for i in range(4)]
+        for i, s in enumerate(srcs):
+            g.inputConnectors[i].connect(s.outputConnectors[0])
+        self.assertIn('look has 4 inputs, but a GLSL TOP reads only three', self.ok('err', '/project1'))
+
     def test_err_groups_repeated_messages(self):
         p = self.w.globals['op']('/project1')
         for i in range(3):

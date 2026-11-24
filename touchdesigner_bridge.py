@@ -323,7 +323,36 @@ def c_err(path='/', limit=40):
     for label, msg in order:
         n, where = groups[(label, msg)]
         lines.append('%s%s %s%s' % (label, ' x%d' % n if n > 1 else '', msg, '  @ ' + where if where else ''))
+    if o.path.count('/') <= 1:  # the root, or a COMP right under it such as /project1
+        lines += _perform_trouble()
+    # A GLSL TOP reads three inputs; a fourth is outside sTD2DInputs and reads as black, with no error from TD.
+    for g in [o] + list(o.findChildren() if hasattr(o, 'findChildren') else []):
+        if getattr(g, 'OPType', '') == 'glslTOP' and len([i for i in g.inputs if i is not None]) > 3:
+            lines.append('W %s has %d inputs, but a GLSL TOP reads only three: use a GLSL Multi TOP  @ %s'
+                         % (g.name, len([i for i in g.inputs if i is not None]), g.path))
     return '\n'.join(_clip(lines, limit)) or 'no errors, no warnings'
+
+
+def _perform_trouble():
+    """What would leave the Perform window (F1) empty: TD reports none of it. The project names a Window COMP
+    for Perform mode (/perform by default, which a new project may not have), and that COMP names what it shows."""
+    try:
+        where = project.performWindowPath
+    except Exception:
+        return []
+    w = where if hasattr(where, 'path') else op(str(where or ''))
+    if w is None:
+        return ['W Perform mode shows %s, which does not exist: F1 opens an empty window. Make a Window COMP that '
+                'shows the output and set project.performWindowPath to it' % (where or '(nothing)')]
+    if getattr(w, 'OPType', '') != 'windowCOMP':
+        return []
+    try:
+        shown = w.par.winop.eval()
+    except Exception:
+        shown = None
+    if shown is None:
+        return ['W Perform mode shows %s, whose Window Operator is empty or missing: F1 opens an empty window' % w.path]
+    return []
 
 
 def c_find(path='/', name=None, type=None, text=None, expr=None, limit=60):
