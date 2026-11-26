@@ -1709,14 +1709,34 @@ def _layout(ops, x0=0, y0=0):
     return (xs[_max(cw) + 1], ys[_max(ch) + 1]) if ops else (0, 0)
 
 
-def _said(o):
-    """The expressions and the text values of the parameters of an OP that are not at their default: where
-    it names other OPs."""
+def _pars_said(o):
     try:
         return ' '.join('%s %s' % (p.expr or '', p.val if isinstance(p.val, str) else '')
                         for p in o.pars() if not p.isDefault)
     except Exception:
         return ''
+
+
+_INCLUDE = re.compile(r'#include\s*<([\w.]+)>|\bop\(\s*[\'"]([\w.]+)[\'"]\s*\)')
+
+
+def _said(o):
+    """Where an OP names other OPs: the expressions and text values of its parameters that are not at their
+    default, what the OPs inside a COMP name one level up (../name), and in the text of a DAT, the OPs it
+    includes in a shader (#include <name>) or looks up by a plain name in Python (op('name')). TouchDesigner
+    draws a link for each of these, so they are arranged as references too."""
+    out = [_pars_said(o)]
+    try:
+        for k in (o.children if getattr(o, 'isCOMP', False) else []):
+            out.append(re.sub(r'\.\./(\w+)', r' \1', _pars_said(k)))
+    except Exception:
+        pass
+    try:
+        if getattr(o, 'isDAT', False) and isinstance(o.text, str):
+            out.extend(a or b for a, b in _INCLUDE.findall(o.text[:200000]))
+    except Exception:
+        pass
+    return ' '.join(out)
 
 
 # Where this bridge last put each OP it made or arranged, by OP id. An OP that is not in here, or is no longer

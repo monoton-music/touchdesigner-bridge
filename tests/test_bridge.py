@@ -385,6 +385,19 @@ class BridgeTest(unittest.TestCase):
         self.assertGreater(run, 40)
         self.assertIn('no overlapping', self.ok('overlaps', '/c'))
 
+    def test_layout_counts_what_children_and_shader_text_name(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='shared_lib textDAT\nshader_a textDAT\nsrc_pts nullTOP\n'
+                                    'geo_x geometryCOMP\nrender_main renderTOP geometry=geo_x\nnull_final nullTOP\n'
+                                    'render_main -> null_final\n')
+        self.ok('write', '/c/shader_a', text='#include <shared_lib>\nvoid main() {}\n')
+        self.ok('new', '/c/geo_x', 'noiseTOP', 'pick', seed='=op("../src_pts").width')
+        self.ok('layout', '/c', yes=True)
+        lib, shader, src, geo = self.at('/c', 'shared_lib', 'shader_a', 'src_pts', 'geo_x')
+        self.assertLess(lib[0], shader[0])      # a shader sits right of the DAT it includes
+        self.assertLess(src[0], geo[0])         # and a COMP right of what the OPs inside it read one level up
+        self.assertIn('no overlapping', self.ok('overlaps', '/c'))
+
     def test_layout_lines_up_a_fan_out_and_shows_a_wire_that_skips_ahead(self):
         self.ok('new', '/', 'baseCOMP', 'c')
         self.ok('build', '/c', spec='src nullTOP\nl1 nullTOP\nl2 nullTOP\nr1 nullTOP\njoin levelTOP\n'
