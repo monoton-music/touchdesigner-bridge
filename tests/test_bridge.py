@@ -373,6 +373,18 @@ class BridgeTest(unittest.TestCase):
         self.assertLess(b1[1], mix[1])                                         # the second input sits below it,
         self.assertEqual(b1[0], a3[0])                                         # in the column just before the mix
 
+    def test_layout_gives_a_wire_that_drops_more_room_sideways(self):
+        self.ok('new', '/', 'baseCOMP', 'c')
+        self.ok('build', '/c', spec='a nullTOP\nb nullTOP\nmix glslTOP\na -> mix\nb -> mix[1]\n')
+        a, b, mix = self.at('/c', 'a', 'b', 'mix')
+        self.assertEqual(a[0], b[0])
+        self.assertLess(b[1], a[1])
+        # the wire from b climbs a row, so mix stands further off than the usual gap
+        run = mix[0] - (b[0] + 130)
+        self.assertGreaterEqual(run, int(40 + (a[1] - b[1]) * 0.3))
+        self.assertGreater(run, 40)
+        self.assertIn('no overlapping', self.ok('overlaps', '/c'))
+
     def test_layout_lines_up_a_fan_out_and_shows_a_wire_that_skips_ahead(self):
         self.ok('new', '/', 'baseCOMP', 'c')
         self.ok('build', '/c', spec='src nullTOP\nl1 nullTOP\nl2 nullTOP\nr1 nullTOP\njoin levelTOP\n'

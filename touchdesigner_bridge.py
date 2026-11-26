@@ -1406,6 +1406,7 @@ def c_build(parent, spec):
 
 
 _GAP = 40  # the space left between neighbouring nodes, along the wiring and between rows
+_RUN, _RUN_MAX = 0.3, 220  # sideways room a wire gets for each unit it goes up or down, and the most it gets
 
 
 def _layout(ops, x0=0, y0=0):
@@ -1681,10 +1682,23 @@ def _layout(ops, x0=0, y0=0):
         if r not in ch:
             ch[r] = 60       # a row left empty between two lines of work
     xs, ys = {0: 0}, {0: 0}
-    for c in range(_max(cw) + 1):
-        xs[c + 1] = xs[c] + cw.get(c, 130 + _GAP)
     for r in range(_max(ch) + 1):
         ys[r + 1] = ys[r] + ch.get(r, 90 + _GAP)
+    # A wire that climbs or drops a long way between two close columns runs nearly upright and is hard to
+    # follow, so the columns it joins are moved apart: the further it goes up or down, the more room it has
+    # to run sideways, up to a limit.
+    rise = {}
+    for o in ops:
+        cb, rb = cell[o.path]
+        for i in rin[o.path]:
+            ca, ra = cell[i.path]
+            if ca < cb and ra != rb:
+                rise.setdefault(cb, []).append((i, ca, abs(ys[ra] - ys[rb])))
+    for c in range(_max(cw) + 1):
+        xs[c + 1] = xs[c] + cw.get(c, 130 + _GAP)
+        for i, ca, dy in rise.get(c + 1, ()):
+            room = xs[c + 1] - (xs[ca] + int(getattr(i, 'nodeWidth', 130)))
+            xs[c + 1] += _max(0, int(min(_GAP + dy * _RUN, _RUN_MAX)) - room)
     for o in ops:
         c, r = cell[o.path]
         # A taller node is centred on its row, so that the wires along the row stay level.
