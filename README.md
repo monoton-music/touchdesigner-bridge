@@ -148,7 +148,7 @@ python3 td.py wait --when 'op("/project1/timer1")["done"].eval() == 1'   # holds
 ## Where pictures are saved
 
 - `top`, `motion`, `compare` and `record` save to the path given with `--file`. Without it, they save under `touchdesigner-bridge/<pid>/img` in the temp folder and return the path.
-- That folder is removed after its TD has been gone for ten minutes. Save what you want to keep with `--file`.
+- That folder stays after TD closes. Once its TD has been gone for ten minutes, it is removed the next time any TD loads the bridge. Save what you want to keep with `--file`.
 - `shot` on macOS needs Screen Recording permission for the terminal. On Windows TD takes the picture itself, so it also works over SSH and from WSL.
 
 ## Reading cook
