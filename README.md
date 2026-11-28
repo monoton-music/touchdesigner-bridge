@@ -4,7 +4,7 @@
 
 A command-line tool for inspecting and editing a running TouchDesigner from an outside shell.
 
-- **Made for**: agents that run commands, such as Claude Code, Codex CLI and Cursor, and shell scripts
+- **Made for**: agents that run commands, such as Claude Code, Codex CLI and Cursor, and shell scripts. A client without a shell, such as the chat in Claude Desktop, cannot use it
 - **What it does**: launches TD, finds heavy OPs, lists errors, reads parameter and CHOP values, grabs the image of a TOP, builds networks
 - **Output**: short text. Only non-default parameters are returned, and line counts are capped
 - **Connection**: it talks to TD through files in the temp folder. No port is opened
@@ -46,11 +46,9 @@ The rest of this document is detail.
 
 Every frame, the script on the TD side looks for requests placed in `touchdesigner-bridge/<pid>/in` under the temp folder, runs them on the main thread and writes the results to `out`. The outside command `td.py` places a request file and waits for the result. A round trip takes one or two frames.
 
-- It opens no port. Other machines on the network cannot reach it.
+- It opens no port. Other machines on the network cannot reach it, and several TDs never collide, since each process has its own folder.
 - Loaded from the textport, it creates no nodes. Nothing is left in the .toe, and it is gone when TD closes.
 - It runs on Windows and macOS, and also works as is from WSL through `/mnt/c`.
-
-The transport has nothing to do with the amount of tokens. What reduces tokens is how the output is narrowed: common inspections are made into commands and formatted on the TD side, only non-default parameters are returned, line counts are capped, and so on.
 
 ## Commands
 
@@ -77,7 +75,7 @@ The target and the location of TouchDesigner are chosen as follows.
 - `td.py open` reads the build an existing .toe was saved with and opens it with that build when it is installed. If it is not installed, a newer build is used, and never an older one: an older build skips what it does not know (every POP, in a 2023 build), and saving from it loses that.
 - If it is somewhere else, or you want a particular build, set `TOUCHDESIGNER_BIN` to its bin folder. On macOS that is `Contents/MacOS` inside the app (for example `/Applications/TouchDesigner.app/Contents/MacOS`).
 
-Only the Python standard library is required.
+Commands that inspect:
 
 ```bash
 python3 td.py info                           # build, measured fps, skipped frames, open networks
@@ -136,8 +134,11 @@ OPs made by `new` and `build` have their node viewer on, so the network shows wh
 
 Where the nodes go:
 
-- `build` into an empty COMP arranges the nodes along the wiring. The longest line through the network runs along the top row, further inputs come in from below, and the branches of a fan-out start in one column. A reference in a parameter counts as a wire that is not drawn, from the OP that is named to the OP that names it: an LFO behind an expression sits just left of the OP that reads it, a camera and a Geometry COMP lead into their Render TOP, and CHOPs that pass a value along through expressions run left to right. This is where people put them: in the example networks that come with TouchDesigner, an OP that another reads is to its left in about three cases out of four. A material that reads nothing itself sits right under the Geometry COMP it is assigned to. A branch starts in the nearest clear row under where it leaves, and a chain that nothing ties to the ones above starts past a narrow empty row. A reference that would run against the wiring is ignored; no wire is turned back for it. Besides parameters, a COMP counts as reading what the OPs inside it name one level up (../name), and a DAT as reading what its text includes in a shader (#include <name>) or looks up in Python (op('name')): TouchDesigner draws a link for these too. A wire that climbs or drops between two close columns would run nearly upright, so those columns are moved apart: the further it goes up or down, the more room it gets sideways (0.3 of the height, up to 220). Unwired OPs added later go under an existing OP they name.
-- In a COMP that already holds others, `build`, `new` and `copy` set what they add beside the OP it is wired to, at the nearest free spot. Nothing that was there moves.
+- `build` into an empty COMP arranges the nodes along the wiring. The longest chain runs along the top row, further inputs come in from below, and the branches of a fan-out start in one column.
+- An OP that another names is placed as if wired into it: an LFO behind an expression sits just left of what reads it, and a camera and a Geometry COMP lead into their Render TOP. This follows the example networks that come with TD, where a named OP is to the left of the one that names it in about three cases out of four.
+- Besides parameters, this counts `../name` inside a COMP and `#include <name>` or `op('name')` in the text of a DAT, which TD also draws links for. A reference that would run against the wiring is ignored.
+- A material sits right under the Geometry COMP it is assigned to. Two close columns joined by a wire that climbs or drops a long way are moved apart, so that the wire does not run nearly upright.
+- In a COMP that already holds others, `build`, `new` and `copy` set what they add beside the OP it is wired to, or under the OP it names when it has no wire, at the nearest free spot. Nothing that was there moves.
 - OPs wired into an existing wire sit on that wire. When there is no room between its two ends, the far end and everything to its right moves over as one piece, so that no wire has to turn back, and the reply says what moved.
 - `layout` rearranges a whole COMP, so it refuses when the COMP holds OPs the bridge did not place. `--yes` is for when the owner asked for the network to be tidied. It keeps the chains in their top-to-bottom order, keeps boxes around their OPs, leaves the network where it was, and is one undo step. OPs the bridge placed and someone nudged since are arranged again and named in the reply.
 - The bridge remembers what it placed only while TD runs. After TD is opened again, every OP counts as someone else's, and so does one made through `py`.
@@ -163,26 +164,9 @@ Pictures and movies are saved as follows.
 - `record` makes a Movie File Out TOP for the length of the recording and removes it afterwards.
 - `shot` saves a picture of the TD window and nothing else on the screen. With a COMP it first points the network editor at that COMP and frames it, which changes what the editor shows. On macOS `td.py` takes it with `screencapture`, and the terminal needs Screen Recording permission. On Windows TD takes the picture of its own window, so it also works from a shell without a desktop, such as SSH or WSL.
 
-
 `python3 td.py help` prints the full list. What to know before use (workflow, how TD behaves, build examples) is collected in [GUIDE.md](GUIDE.md), which `python3 td.py guide` also prints. Every command takes `--limit N` for the number of lines and `--timeout S` for the wait.
 
 ## Design
-
-### Made for clients that have a shell
-
-- The bridge is for agents that run commands, such as Claude Code, Codex CLI and Cursor, and for shell scripts.
-- Each command is an ordinary process that prints text and returns an exit status, so it combines with pipes, here-documents and shell scripts.
-  - `build` reads its spec from standard input.
-  - `wait --when` holds a script until the project reaches a given state.
-- A client without a shell, such as the chat in Claude Desktop, which can only call the tools registered with it, cannot use the bridge.
-
-### Requests and replies are files
-
-- All it asks of TD is one script that runs every frame.
-- No port is opened, so there is no port number to configure and none to collide when several TDs run.
-- Each TD process has its own request folder.
-- Loaded from the textport, it is used without adding anything to the .toe.
-- The folder is read once a frame, so a request waits for the next frame.
 
 ### Fixed commands and `py`
 
@@ -216,16 +200,11 @@ The fixed commands are not meant to cover the whole of TD.
 - Two pictures taken at different times cannot tell the change from the scene moving on.
 - It returns both pictures as numbers, how much of the picture differs and where, and a sheet of the two side by side. When nothing differs, it says so.
 
-### Limits
-
-- Requests run on TD's main thread, because TD objects can only be touched there. A request that takes long stops frames for that long. Grabbing one full-HD image of a TOP takes most of a frame at 60 fps.
-- The request folder is protected only by the permissions of the user account. Software running as the same user can place a request and have code executed inside TD.
-
 ## Output design
 
 - Output is short by default. Only non-default parameters are returned, lists are capped, and when a list is cut, the remaining count and a way to narrow it are added.
 - One call is enough. `op` returns what is needed about one OP in a single call, and `build` creates and wires several OPs in a single call.
-- What is worth knowing is said at the moment it applies, as a `note` line. `new` and `build` name the setting a type needs when they make one, and `top` says when the picture is black, white all over or holds invalid values. The first command that builds points at the guide once, unless `td.py guide` has been run. That keeps the reading beforehand short. It is advice: the command does the same either way.
+- What is worth knowing is said at the moment it applies, as a `note` line. `new` and `build` name the setting a type needs when they make one, and `top` says when the picture is black, white all over or holds invalid values. That keeps the reading beforehand short. It is advice: the command does the same either way.
 - A wrong call gets a fix, not a traceback. A path that does not exist comes with near names that do exist, and a parameter that does not exist comes with near parameter names.
 - Images are saved shrunk by a whole factor, each pixel the mean of a block. Reading a 4K TOP as is is heavy, plain decimation drops points and thin lines, and with a fractional factor (1920 to 768 is 2.5) the number of pixels averaged varies from place to place, which can leave film grain and patterns one or two pixels wide uneven. Alpha is dropped, giving the image over black.
 
@@ -241,7 +220,7 @@ Read GPU times as a rough guide. A TOP finishes cooking before its GPU work is d
 
 ## Cautions
 
-- Requests run on TD's main thread. A heavy request stops frames while it runs, so do not load the bridge during a live show.
+- Requests run on TD's main thread, because TD objects can only be touched there. A heavy request stops frames while it runs (grabbing one full-HD image of a TOP takes most of a frame at 60 fps), so do not load the bridge during a live show.
 - The changing commands and `py` can change the patch. When investigating, only read, and check with the owner before changing anything. Do not save the project.
 - TD's own `/ui` and `/sys` are excluded.
 - Anything that can write to the temp folder, that is, software running as the same user, can have code executed inside TD. If you move the folder with the `TOUCHDESIGNER_BRIDGE_DIR` environment variable, do not point it at a place other users can write to.
@@ -258,7 +237,6 @@ The commands under Commands were run against the real TD of these builds.
 | 2023.12600 | Windows 11 (driven from WSL2) |
 
 - The placement of nodes, `shot` and `tests/live.py` were run on the two 2025 builds only.
-
 - Older builds were not checked. On a build without a newer attribute the old name is used, and that fallback is covered by the tests that run against the stand-in for TD.
 - Working with POPs needs a build that has them, 2025 or later.
 - `record` writes Motion JPEG where the build or the machine cannot write H.264.
@@ -280,8 +258,6 @@ python3 tests/live.py
 `tests/live.py` needs a real TD with the bridge loaded. It covers what only the real thing shows: node sizes, docked DATs, connectors, undo, cooking and the picture of the window. It builds random networks of 6, 25 and 60 OPs, adds to them as if they were someone else's, scatters them and tidies them, and after each step checks that no node lies on another, no wire runs right to left, no wire is hidden behind a node, nothing that was there moved unasked, and TD reports no error. Everything happens inside one COMP it makes at the root and removes at the end.
 
 In `tests/fake_td.py`, names and meanings were checked against the Python stubs bundled with TD 2025.32460 (`bin/Lib/tdi`) and the bundled offline help.
-
-To avoid depending on a particular build, only long-standing APIs are used, and builds without a newer attribute fall back to the old name.
 
 ## Use of generative AI
 
