@@ -175,7 +175,9 @@ The script on the TD side checks a request folder under the temp folder once a f
 
 ## Requirements and tested builds
 
-It is expected to work with TouchDesigner 2023 and later on Windows and macOS, since it uses only long-standing APIs and falls back to the old name where a build lacks a newer attribute. POPs need 2025 or later.
+It is meant for TouchDesigner 2023 and later on Windows and macOS. POPs need 2025 or later.
+
+Builds from 2022 and earlier were not checked. The script on the TD side keeps to Python 3.7 syntax and falls back to the old name where a build lacks a newer attribute, so they may work.
 
 It was checked on these:
 
