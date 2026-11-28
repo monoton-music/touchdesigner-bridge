@@ -2,10 +2,10 @@
 
 # touchdesigner-bridge
 
-A command-line tool for inspecting and editing a running TouchDesigner from an outside shell.
+A command-line tool for inspecting and editing a running TouchDesigner (TD) from an outside shell.
 
 - **Made for**: agents that run commands, such as Claude Code, Codex CLI and Cursor, and shell scripts. A client without a shell, such as the chat in Claude Desktop, cannot use it
-- **What it does**: launches TD, finds heavy OPs, lists errors, reads parameter and CHOP values, grabs the image of a TOP, builds networks
+- **What it does**: launches TD, finds heavy operators (OPs), lists errors, reads parameter and CHOP values, grabs the image of a TOP, builds networks
 - **Output**: short text. Only non-default parameters are returned, and line counts are capped
 - **Connection**: files in the temp folder. No port is opened
 - **Requires**: Python 3 (standard library only) and TouchDesigner
