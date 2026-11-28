@@ -40,7 +40,7 @@ python3 td.py help                  # every command
 
 ## Connecting
 
-`td.py open FILE.toe` launches TD and returns once it is connected. It adds an Execute DAT that loads the bridge (`/local/touchdesigner_bridge`) to the .toe, so from then on the file connects just by being opened. The file is rewritten with `toeexpand` and `toecollapse`, which ship with TD, and the original is kept as `.bak`. For an existing .toe, add `--install`.
+`td.py open FILE.toe` launches TD and returns once it is connected. When the file is missing, it creates an empty project holding an Execute DAT that loads the bridge (`/local/touchdesigner_bridge`). With `--install`, it adds the same DAT to an existing .toe before opening it. A .toe that holds this DAT connects just by being opened. The file is rewritten with `toeexpand` and `toecollapse`, which ship with TD, and the original is kept as `.bak`.
 
 To leave the .toe untouched, paste one line into the textport of the running TD (Alt+T, Option+T on macOS). `python3 td.py setup` prints that line with the paths of your machine and copies it to the clipboard.
 
@@ -169,7 +169,7 @@ The script on the TD side checks a request folder under the temp folder once a f
 ## Cautions
 
 - A request stops TD's frames while it runs. Grabbing one full-HD image takes most of a frame at 60 fps. Do not load the bridge during a live show.
-- The changing commands and `py` change the patch. When investigating, only read, and ask the owner before changing anything. The bridge never saves the project.
+- The changing commands and `py` change the patch. When investigating, only read, and ask the owner before changing anything. The bridge does not save the project in TD. Only `open --install` and `install FILE.toe` rewrite the .toe file, so nothing is saved unless code run through `py` saves it.
 - Software running as your user can write to the request folder and run code inside TD. If you move the folder with `TOUCHDESIGNER_BRIDGE_DIR`, do not choose one other users can write to.
 
 ## Tested with
