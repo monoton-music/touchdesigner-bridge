@@ -51,14 +51,14 @@ exec(open(r'C:\path\to\touchdesigner-bridge\touchdesigner_bridge.py', encoding='
 Choosing the TD:
 
 - With several TDs open, pass part of the .toe name or the pid to `--to`, or set `TOUCHDESIGNER_BRIDGE_TO`. `td.py status` lists the TDs that respond.
-- TouchDesigner is looked for in `C:\Program Files\Derivative` on Windows and `/Applications` on macOS. Elsewhere, set `TOUCHDESIGNER_BIN` to its bin folder (on macOS, `TouchDesigner.app/Contents/MacOS`).
+- The TouchDesigner executable is looked for in `C:\Program Files\Derivative` on Windows and `/Applications` on macOS. Elsewhere, set `TOUCHDESIGNER_BIN` to its bin folder (on macOS, `TouchDesigner.app/Contents/MacOS`).
 - `open` uses the build the .toe was saved with, or a newer one when that is not installed. It never uses an older one: an older build drops what it does not know, such as every POP in a 2023 build, and saving loses it.
 
 ## Commands
 
 `python3 td.py help` prints every command. These are the common ones.
 
-Finding problems:
+### Finding problems
 
 ```bash
 python3 td.py info                           # build, measured fps, skipped frames
@@ -68,7 +68,7 @@ python3 td.py mem /project1                  # largest memory use first
 python3 td.py find / --expr 'absTime'        # OPs with an expression that contains absTime
 ```
 
-Reading the network:
+### Reading the network
 
 ```bash
 python3 td.py ls /project1 --depth 2 --type '*TOP'
@@ -82,7 +82,7 @@ python3 td.py geo /project1/sphere1          # point count, bounds and attribute
 python3 td.py doc noiseTOP --grep seed       # the help bundled with TD
 ```
 
-Looking at the picture and the motion:
+### Looking at the picture and the motion
 
 ```bash
 python3 td.py top /project1/out1             # saves a PNG, at most 768 on the long side, and returns the path
@@ -95,7 +95,9 @@ python3 td.py record /project1/out1 --seconds 3 --file clip.mp4    # a few secon
 python3 td.py shot /project1                 # a picture of the TD window, with /project1 framed in the network editor
 ```
 
-Changing the patch (each command is one undo step):
+### Changing the network
+
+Each of these is one `undo` step.
 
 ```bash
 python3 td.py set /project1/noise1 seed=3 tx='=absTime.seconds'
@@ -109,8 +111,8 @@ n -> lv
 lv -> out
 END
 python3 td.py write /project1/shader - < shader.glsl   # replace the text of a DAT; a shader is compiled and its errors returned
-python3 td.py layout /project1               # arrange the nodes along the wiring
-python3 td.py note /project1/lv1 'lifts the blacks'    # a comment shown on the node
+python3 td.py layout /project1               # arrange the OPs along the wiring
+python3 td.py note /project1/lv1 'lifts the blacks'    # a comment shown on the OP
 python3 td.py knob /project1 Gain=0.5@lv1.opacity      # a custom parameter on the COMP that drives lv1.opacity
 python3 td.py rm /project1/lv1 --yes         # without --yes, only reports what would be deleted
 python3 td.py undo
@@ -123,12 +125,12 @@ What to know before use, such as the workflow, how TD behaves and examples of `b
 
 - `new`, `build`, `set` and `wire` cook what they touched and return its errors. TD finds no error in an OP that has not cooked, so `err` alone would call a freshly built network clean.
 - `set` refuses a value TD will not take, or an expression that fails, and puts the parameter back.
-- `build` is all or nothing. When one line fails, nothing it made is left behind.
+- `build` is all or nothing. When one line fails, every OP it made is removed.
 - OPs made by `new` and `build` have their viewer on. Viewers cost cook time; turn them off with `td.py flag '/project1/*' viewer=0`.
 
-## Where new nodes go
+## Where new OPs go
 
-- `build` into an empty COMP arranges the nodes along the wiring, from left to right.
+- `build` into an empty COMP arranges the OPs along the wiring, from left to right.
 - An OP that another reads, through an expression or a setting such as a material, sits beside it as if wired into it, such as an LFO just left of the OP it drives.
 - In a COMP that already holds others, new OPs go beside the OP they are wired to. Nothing that was there moves, except when an OP is put into an existing wire without room: then everything to its right moves over, and the reply says so.
 - `layout` arranges a whole COMP again, so it refuses a COMP that holds OPs someone else placed. Pass `--yes` when the owner asked for it to be tidied.
@@ -178,8 +180,8 @@ The script on the TD side checks a request folder under the temp folder once a f
 | 2025.33230 | macOS |
 | 2023.12600 | Windows 11 (from WSL2) |
 
-- Node placement, `shot` and `tests/live.py` were run on the two 2025 builds only.
-- Older builds were not checked.
+- OP placement, `shot` and `tests/live.py` were run on the two 2025 builds only.
+- Builds older than 2023.12600 were not checked.
 - POPs need 2025 or later.
 - `record` writes Motion JPEG where H.264 is not available.
 
@@ -190,7 +192,7 @@ python3 -m unittest discover -s tests          # needs no TD; tests/fake_td.py s
 python3 td.py open scratch.toe && python3 tests/live.py   # needs a real TD
 ```
 
-`tests/live.py` builds random networks of 6, 25 and 60 OPs inside one COMP, adds to them, scatters and tidies them. After each step it checks that no node overlaps another, no wire runs right to left, nothing moved unasked and TD reports no error. It removes the COMP at the end.
+`tests/live.py` builds random networks of 6, 25 and 60 OPs inside one COMP, adds to them, scatters and tidies them. After each step it checks that no OP overlaps another, no wire runs right to left, nothing moved unasked and TD reports no error. It removes the COMP at the end.
 
 ## Use of generative AI
 
