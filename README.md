@@ -71,7 +71,7 @@ python3 td.py find / --expr 'absTime'        # OPs with an expression that conta
 ### Reading the network
 
 ```bash
-python3 td.py ls /project1 --depth 2 --type '*TOP'
+python3 td.py ls /project1 --depth 2 --type '*TOP'   # the OPs inside, listed
 python3 td.py op /project1/noise1            # type, connections, parameters, errors and cook in one
 python3 td.py flow /project1                 # wiring inside a COMP as a -> b
 python3 td.py par '/project1/noise*' seed    # non-default parameters only; names may use * ?
@@ -138,7 +138,7 @@ What to know before use, such as the workflow, how TD behaves and examples of `b
 
 ## Waiting for a moment
 
-Every command except `py` takes `--when 'EXPR'`. It runs in the first frame in which the Python expression is true, and is refused after `--wait` seconds (60 by default). A still depends on the frame it was taken in, and a `sleep` in the shell misses that frame.
+A still depends on the frame it was taken in, and a `sleep` in the shell misses that frame. Every command except `py` takes `--when 'EXPR'` and runs in the first frame in which the Python expression is true. If that does not happen within `--wait` seconds (60 by default), it returns an error.
 
 ```bash
 python3 td.py top /project1/out1 --when 'absTime.seconds % 38 > 9'
@@ -163,14 +163,14 @@ python3 td.py wait --when 'op("/project1/timer1")["done"].eval() == 1'   # holds
 The script on the TD side checks a request folder under the temp folder once a frame, runs what it finds on the main thread and writes the result next to it. `td.py` writes a request and waits for the result, which takes one or two frames.
 
 - No port is opened, so other machines cannot reach it, and several TDs do not collide.
-- Loaded from the textport, it leaves nothing in the .toe.
-- Output is kept short: only non-default parameters, capped lists with the count of what was cut, and near names instead of a traceback when a path or parameter is wrong.
+- Output is kept short: capped lists with the count of what was cut, and near names instead of a traceback when a path or parameter is wrong.
 - Pictures are shrunk by a whole factor, each pixel the mean of a block, so thin lines and grain survive. Alpha is dropped.
 
 ## Cautions
 
 - A request stops TD's frames while it runs. Grabbing one full-HD image takes most of a frame at 60 fps. Do not load the bridge during a live show.
-- The changing commands and `py` change the patch. When investigating, only read, and ask the owner before changing anything. The bridge does not save the project in TD. Only `open --install` and `install FILE.toe` rewrite the .toe file, so nothing is saved unless code run through `py` saves it.
+- The changing commands and `py` change the patch. When investigating, only read, and ask the owner before changing anything.
+- The bridge does not save the project in TD. Only `open --install` and `install FILE.toe` rewrite the .toe file. Nothing is saved unless code run through `py` saves it.
 - Software running as your user can write to the request folder and run code inside TD. If you move the folder with `TOUCHDESIGNER_BRIDGE_DIR`, do not choose one other users can write to.
 
 ## Requirements and tested builds
