@@ -150,6 +150,7 @@ python3 td.py wait --when 'op("/project1/timer1")["done"].eval() == 1'   # 式�
 - `top`、`motion`、`compare`、`record` は、`--file` で指定したパスに保存します。省略した場合は一時フォルダ内の `touchdesigner-bridge/<pid>/img` に保存し、そのパスを返します。
 - このフォルダは TD を終了しても残ります。終了してから 10 分以上経ったフォルダは、次にいずれかの TD がブリッジを読み込んだときに削除されます。残したい画像は `--file` で保存先を指定してください。
 - macOS で `shot` を使用するには、ターミナルに画面収録の権限が必要です。Windows では TD が自身のウィンドウをキャプチャするので、SSH や WSL からも実行できます。
+- `record` は、H.264 に対応していない環境では Motion JPEG で書き出します。
 
 ## cook 時間の見方
 
@@ -174,16 +175,13 @@ TD 側のスクリプトは、一時フォルダ内のリクエスト用フォ�
 
 ## 動作環境
 
-| TouchDesigner | OS |
-|---|---|
-| 2025.32460 | Windows 11（WSL2 から操作） |
-| 2025.33230 | macOS |
-| 2023.12600 | Windows 11（WSL2 から操作） |
+Windows と macOS の TouchDesigner 2023 以降のビルドで、基本的に動作すると考えています。以前から存在する API だけを使用し、新しい属性がないビルドでは古い名前の属性を使用するためです。POP を扱うには 2025 以降のビルドが必要です。
 
-- OP の配置、`shot`、`tests/live.py` は、2025 の 2 つのビルドだけで確認しました。
-- 2023.12600 より古いビルドでは動作を確認していません。
-- POP を扱うには 2025 以降のビルドが必要です。
-- `record` は、H.264 に対応していない環境では Motion JPEG で書き出します。
+動作を確認したのは次の環境です。
+
+- TouchDesigner 2025.32460、Windows 11（WSL2 から操作）
+- TouchDesigner 2025.33230、macOS
+- TouchDesigner 2023.12600、Windows 11（WSL2 から操作）。OP の配置、`shot`、`tests/live.py` は確認していません。
 
 ## テスト
 
